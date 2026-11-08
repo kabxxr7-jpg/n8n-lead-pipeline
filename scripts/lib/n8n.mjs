@@ -209,6 +209,7 @@ export function pipelineEnv(cfg) {
     TEAM_EMAIL: cfg.teamEmail,
     DAILY_LEAD_CAP: String(cfg.dailyCap ?? 150),
     GEMINI_MODEL: cfg.geminiModel,
+    GEMINI_BACKUP_MODEL: cfg.geminiBackupModel || "gemini-3.5-flash-lite",
     HUBSPOT_PORTAL_ID: cfg.hubspotPortalId ?? "",
     SIM_OUTAGE_URL: cfg.simOutageUrl,
     RETENTION_DAYS: String(cfg.retentionDays ?? 14),

@@ -189,6 +189,15 @@ return [
   });
   f.nodes.at(-1).parameters.authentication = "genericCredentialType";
   f.nodes.at(-1).parameters.genericAuthType = "httpHeaderAuth";
+  f.http("Gemini: backup model", {
+    method: "POST",
+    url: "={{ ($env.GEMINI_BASE || 'https://generativelanguage.googleapis.com') + '/v1beta/models/' + ($env.GEMINI_BACKUP_MODEL || 'gemini-3.5-flash-lite') + ':generateContent' }}",
+    json: "$('Build AI request').first().json.request",
+    timeout: 20000,
+    pos: at(13, 7),
+    node: { retryOnFail: true, maxTries: 3, waitBetweenTries: 2000, onError: "continueErrorOutput", credentials: credRef(CRED.gemini), notes: "Second chance on a lighter model when the main one is busy. Then the rules fallback." },
+  });
+  Object.assign(f.nodes.at(-1).parameters, { authentication: "genericCredentialType", genericAuthType: "httpHeaderAuth" });
   f.code("Simulated AI answer", js(["qualify.fn.js"], "return [{ json: simulatedBrokenAnswer() }];"), at(13, 3), {
     note: "Only for the 'AI returns broken JSON' demo option.",
   });
@@ -201,7 +210,7 @@ const parsed = parseGeminiResponse(input);
 let q, summary;
 if (parsed.ok) {
   q = { ...parsed.value, scored_by: 'ai', model: parsed.meta.model };
-  summary = 'Gemini scored the lead ' + q.score + '/100 (' + q.tier + '). The answer passed the schema check.';
+  summary = 'Gemini (' + (q.model || 'model') + ') scored the lead ' + q.score + '/100 (' + q.tier + '). The answer passed the schema check.';
 } else {
   q = { ...scoreByRules(v.lead), scored_by: 'rules-fallback', fallback_reason: parsed.problem };
   summary = 'AI answer rejected (' + parsed.problem + '). Scored by the rules fallback: ' + q.score + '/100 (' + q.tier + ').';
@@ -403,7 +412,8 @@ return [event(v.lead_id, 'done', outcome === 'failed' ? 'failed' : 'ok', summary
   f.connect("Accepted (202)", "Simulate broken AI?");
   f.connect("Simulate broken AI?", "Simulated AI answer", 0).connect("Simulate broken AI?", "Build AI request", 1);
   f.connect("Build AI request", "Gemini: qualify lead");
-  f.connect("Gemini: qualify lead", "Check AI answer", 0).connect("Gemini: qualify lead", "Check AI answer", 1);
+  f.connect("Gemini: qualify lead", "Check AI answer", 0).connect("Gemini: qualify lead", "Gemini: backup model", 1);
+  f.connect("Gemini: backup model", "Check AI answer", 0).connect("Gemini: backup model", "Check AI answer", 1);
   f.connect("Simulated AI answer", "Check AI answer");
   f.connect("Check AI answer", "Log: qualified");
   f.connect("Log: qualified", "Prepare contact");

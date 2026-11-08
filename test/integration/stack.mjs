@@ -35,6 +35,7 @@ export async function startStack() {
       teamEmail: "team@example.test",
       dailyCap: 150,
       geminiModel: "gemini-mock",
+      geminiBackupModel: "gemini-mock-lite",
       hubspotPortalId: "4242",
       simOutageUrl: `${n8nBase}/webhook/sim-crm-outage`,
       retentionDays: -1, // the cleanup test deletes everything up to tomorrow

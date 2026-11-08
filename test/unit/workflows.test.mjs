@@ -36,8 +36,12 @@ describe.each(files)("%s", (file) => {
 describe("intake", () => {
   const wf = load("lead-intake.json");
   const node = (n) => wf.nodes.find((x) => x.name === n);
-  it("routes both outputs of every outside call to its recorder (error branch)", () => {
-    for (const n of wf.nodes.filter((x) => x.type === "n8n-nodes-base.httpRequest")) {
+  it("sends the main model's failures to the backup model, then both outputs to the check", () => {
+    expect(wf.connections["Gemini: qualify lead"].main.map((o) => o[0].node)).toEqual(["Check AI answer", "Gemini: backup model"]);
+    expect(wf.connections["Gemini: backup model"].main.map((o) => o[0].node)).toEqual(["Check AI answer", "Check AI answer"]);
+  });
+  it("routes both outputs of every other outside call to its recorder (error branch)", () => {
+    for (const n of wf.nodes.filter((x) => x.type === "n8n-nodes-base.httpRequest" && x.name !== "Gemini: qualify lead")) {
       expect(n.onError, n.name).toBe("continueErrorOutput");
       const outs = wf.connections[n.name].main;
       expect(outs).toHaveLength(2);

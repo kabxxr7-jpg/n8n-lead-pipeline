@@ -4,7 +4,7 @@ import http from "node:http";
 
 export function startMocks() {
   const requests = [];
-  const faults = { gemini: [], hubspotContact: [], hubspotNote: [], resendAlert: [], resend: [] };
+  const faults = { gemini: [], geminiBackup: [], hubspotContact: [], hubspotNote: [], resendAlert: [], resend: [] };
   let geminiAnswer = null; // override answer text
   let contactSeq = 100;
   let emailSeq = 0;
@@ -21,7 +21,7 @@ export function startMocks() {
       const fault = (k) => (faults[k].length ? faults[k].shift() : null);
 
       if (req.url.startsWith("/gemini/v1beta/models/")) {
-        const f = fault("gemini");
+        const f = fault(req.url.includes("-lite:") ? "geminiBackup" : "gemini");
         if (f) return send(f, { error: { code: f, message: "mock overloaded", status: "UNAVAILABLE" } });
         const text = geminiAnswer ?? JSON.stringify({ score: 84, tier: "hot", reason: "Clear redesign scope, mid-five-figure budget and a near timeline.", next_step: "book_call", red_flags: [] });
         return send(200, { candidates: [{ content: { role: "model", parts: [{ text }] }, finishReason: "STOP" }], usageMetadata: { promptTokenCount: 310, candidatesTokenCount: 45 }, modelVersion: "mock-gemini" });

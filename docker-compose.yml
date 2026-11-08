@@ -40,6 +40,7 @@ services:
       TEAM_EMAIL: ${TEAM_EMAIL}
       DAILY_LEAD_CAP: ${DAILY_LEAD_CAP:-150}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.5-flash}
+      GEMINI_BACKUP_MODEL: ${GEMINI_BACKUP_MODEL:-gemini-3.5-flash-lite}
       HUBSPOT_PORTAL_ID: ${HUBSPOT_PORTAL_ID:-}
       SIM_OUTAGE_URL: http://127.0.0.1:5678/webhook/sim-crm-outage
       RETENTION_DAYS: "14"

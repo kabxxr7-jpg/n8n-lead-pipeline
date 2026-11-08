@@ -121,16 +121,24 @@ describe("AI failures fall back to the rules", () => {
     expect(st.qualification).toMatchObject({ scored_by: "rules-fallback", fallback_reason: 'tier "cold" does not match score 90' });
     expect(st.outcome).toBe("ok");
   });
-  it("Gemini down: 3 tries, then fallback; the lead still flows on", async () => {
+  it("main model busy: 3 tries, then the backup model answers", async () => {
     s.mocks.faults.gemini.push(503, 503, 503);
     const { st } = await runToEnd(lead());
     const g = reqs("/gemini");
-    expect(g).toHaveLength(3);
+    expect(g.map((q) => q.path.includes("-lite:"))).toEqual([false, false, false, true]);
     expect(g[1].at - g[0].at).toBeGreaterThanOrEqual(1900);
+    expect(st.qualification.scored_by).toBe("ai");
+    expect(step(st, "qualified").summary).toMatch(/^Gemini \(mock-gemini\)/);
+  }, 60_000);
+  it("both models down: 3 + 3 tries, then the rules fallback; the lead still flows on", async () => {
+    s.mocks.faults.gemini.push(503, 503, 503);
+    s.mocks.faults.geminiBackup.push(503, 503, 503);
+    const { st } = await runToEnd(lead());
+    expect(reqs("/gemini")).toHaveLength(6);
     expect(st.qualification.scored_by).toBe("rules-fallback");
     expect(st.qualification.fallback_reason).toMatch(/request failed/);
     expect(step(st, "crm_contact").state).toBe("ok");
-  }, 60_000);
+  }, 90_000);
   it("Gemini fails twice then answers: the third try is used", async () => {
     s.mocks.faults.gemini.push(500, 429);
     const { st } = await runToEnd(lead());

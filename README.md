@@ -6,7 +6,7 @@ A self-hosted n8n workflow that takes a website enquiry and, in a few seconds:
 
 1. validates it and runs a spam guard (honeypot, minimum fill time, link count, disposable-email block, per-email and per-IP rate limits, a daily cap);
 2. answers the form straight away (HTTP 202) and keeps going in the background;
-3. has **Google Gemini** score the lead 0-100 with a reason, next step and red flags, using a JSON schema, then **checks the answer against a strict contract** (types, ranges, allowed values, tier matches score). Anything off-contract is rejected and a deterministic rules score takes over;
+3. has **Google Gemini** score the lead 0-100 with a reason, next step and red flags, using a JSON schema, then **checks the answer against a strict contract** (types, ranges, allowed values, tier matches score). If the main model is busy, a lighter backup model gets a turn; anything off-contract, or both models failing, hands over to a deterministic rules score;
 4. creates or updates the contact in **HubSpot** (by email) and attaches a note with the score, reason and brief;
 5. sends the lead a **reply email** and the team an **alert email** (through Resend);
 6. records every step, so the visitor sees a **live status page** with the path their lead took.
@@ -24,7 +24,7 @@ Fernbrook Studio, the business on the form, is fictional. The pipeline is real.
 | n8n 2.45.7, self-hosted in Docker, four workflows | Real |
 | Public gateway (form, status page, two API routes; everything else 404) | Real |
 | Spam guard and rate limits | Real |
-| Lead scoring by Google Gemini with a JSON schema | Real API call (free tier) |
+| Lead scoring by Google Gemini with a JSON schema (gemini-3.5-flash, backup gemini-3.5-flash-lite) | Real API call |
 | HubSpot contact and note | Real HubSpot account (free CRM, test data) |
 | Reply email to the lead and team alert | Real emails sent through Resend |
 | Live status page | Real: read from n8n data tables while the workflow runs |
@@ -55,7 +55,7 @@ Open "Try the failure path" on the form:
 
 | File | Trigger | Nodes | What it does |
 |---|---|---|---|
-| `lead-intake.json` | `POST /webhook/lead-intake` | 42 | the pipeline above |
+| `lead-intake.json` | `POST /webhook/lead-intake` | 43 | the pipeline above |
 | `lead-status.json` | `GET /webhook/lead-status?id=` | 7 | builds the public timeline from the events table |
 | `simulated-crm-outage.json` | `POST /webhook/sim-crm-outage` (internal) | 5 | answers 503 and logs each attempt |
 | `error-alert.json` | Error Trigger | 3 | emails the team when an execution fails |
@@ -71,7 +71,7 @@ npm test                                   # unit tests: validation, limits, AI 
 N8N_BIN=/path/to/n8n/bin/n8n npm run test:integration   # end to end on a real n8n 2.45.7 with local stand-ins
 ```
 
-The end-to-end suite starts a throwaway n8n, creates the owner, data tables, credentials and workflows through n8n's API, and checks: the happy path (all 8 steps, request shapes, auth headers, idempotency keys, the note linked to the contact, one email each); that the status page never shows the full email or the message; spam, invalid and rate-limited submissions; an off-contract AI answer, Gemini down (3 tries then fallback) and Gemini recovering on the third try; the simulated CRM outage (live retries, note skipped, reply still sent, urgent alert); a failing note; a failing team alert (execution fails, Error Workflow alerts); and the daily cleanup deleting old records.
+The end-to-end suite starts a throwaway n8n, creates the owner, data tables, credentials and workflows through n8n's API, and checks: the happy path (all 8 steps, request shapes, auth headers, idempotency keys, the note linked to the contact, one email each); that the status page never shows the full email or the message; spam, invalid and rate-limited submissions; an off-contract AI answer, the main model busy (3 tries, then the backup model answers), both models down (3 + 3 tries, then the rules), and the main model recovering on its third try; the simulated CRM outage (live retries, note skipped, reply still sent, urgent alert); a failing note; a failing team alert (execution fails, Error Workflow alerts); and the daily cleanup deleting old records.
 
 CI runs both suites on every push.
 
