@@ -44,6 +44,10 @@ services:
       HUBSPOT_PORTAL_ID: ${HUBSPOT_PORTAL_ID:-}
       SIM_OUTAGE_URL: http://127.0.0.1:5678/webhook/sim-crm-outage
       RETENTION_DAYS: "14"
+      ZOHO_ENABLED: ${ZOHO_ENABLED:-false}
+      ZOHO_API_BASE: ${ZOHO_API_DOMAIN:-https://www.zohoapis.com}
+      ZOHO_CRM_WEB: ${ZOHO_CRM_WEB:-https://crm.zoho.com}
+      ZOHO_ORG_ID: ${ZOHO_ORG_ID:-}
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz/readiness || exit 1"]
       interval: 10s

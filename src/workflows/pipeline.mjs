@@ -7,16 +7,18 @@ const fn = (file) => fs.readFileSync(path.join(CODE_DIR, file), "utf8").trimEnd(
 const js = (includes, body) => [...includes.map(fn), body.trim()].join("\n\n");
 
 export const TABLES = {
-  leads: { name: "pipeline_leads", columns: ["lead_id", "email_hash", "day", "simulate"] },
+  leads: { name: "pipeline_leads", columns: ["lead_id", "email_hash", "day", "simulate", "crm"] },
   events: { name: "lead_events", columns: ["lead_id", "step", "state", "summary", "detail"] },
 };
 export const CRED = {
   gemini: { key: "gemini", name: "Gemini API key" },
   hubspot: { key: "hubspot", name: "HubSpot private app" },
   resend: { key: "resend", name: "Resend API key" },
+  zoho: { key: "zoho", name: "Zoho CRM (self client)", type: "oAuth2Api" },
 };
 // placeholder ids; scripts/setup.mjs swaps in the real credential ids at upload
 const credRef = (c) => ({ httpHeaderAuth: { id: `__CRED_${c.key.toUpperCase()}__`, name: c.name } });
+const oauthRef = (c) => ({ oAuth2Api: { id: `__CRED_${c.key.toUpperCase()}__`, name: c.name } });
 
 const RETRY = { retryOnFail: true, maxTries: 3, waitBetweenTries: 2000 };
 const V = "$('Validate & spam guard').first().json";
@@ -66,7 +68,7 @@ export function intakeFlow() {
     js(["validate.fn.js"], `
 const crypto = require('crypto');
 const nowMs = Date.now();
-const r = validateLead($input.first().json.body, nowMs);
+const r = validateLead($input.first().json.body, nowMs, { zohoEnabled: $env.ZOHO_ENABLED === 'true' });
 if (r.kind !== 'ok') return [{ json: r }];
 const email_hash = crypto.createHash('sha256').update(r.lead.email).digest('hex');
 return [{ json: {
@@ -140,6 +142,7 @@ return [{ json: checkLimits(rows, { emailHash: v.email_hash, nowMs: Date.now(), 
           email_hash: `={{ ${V}.email_hash }}`,
           day: `={{ ${V}.day }}`,
           simulate: `={{ ${V}.lead.simulate }}`,
+          crm: `={{ ${V}.lead.crm }}`,
         },
         matchingColumns: [],
         schema: stringSchema(TABLES.leads.columns),
@@ -157,7 +160,7 @@ const v = ${V};
 const l = v.lead;
 const masked = l.email.split('@')[0].slice(0, 2) + '••@' + l.email.split('@')[1];
 return [
-  event(v.lead_id, 'received', 'ok', 'Your form reached the n8n webhook.', { first_name: l.first_name, company: l.company, email_masked: masked, simulate: l.simulate }),
+  event(v.lead_id, 'received', 'ok', 'Your form reached the n8n webhook.', { first_name: l.first_name, company: l.company, email_masked: masked, simulate: l.simulate, crm: l.crm }),
   event(v.lead_id, 'validated', 'ok', 'Passed field checks, honeypot, timing (' + l.fill_seconds + ' s to fill), link count and rate limits.', { fill_seconds: l.fill_seconds, service: l.service, budget: l.budget, timeline: l.timeline }),
 ];`),
     at(8, 4),
@@ -221,79 +224,123 @@ return [event(v.lead_id, 'qualified', 'ok', summary, q)];`),
   );
   logEvent(f, "Log: qualified", at(15, 4));
 
-  // --- HubSpot contact
+  // --- CRM contact (HubSpot or Zoho CRM, picked per run on the form)
   f.code(
     "Prepare contact",
     js(["messages.fn.js"], `
 const v = ${V};
+const q = JSON.parse($('Check AI answer').first().json.detail);
 const outage = v.lead.simulate === 'crm_outage';
-const url = outage
-  ? ($env.SIM_OUTAGE_URL || 'http://127.0.0.1:5678/webhook/sim-crm-outage') + '?lead_id=' + encodeURIComponent(v.lead_id)
-  : ($env.HUBSPOT_BASE || 'https://api.hubapi.com') + '/crm/v3/objects/contacts/batch/upsert';
-return [{ json: { url, body: hubspotContactUpsert(v.lead) } }];`),
+const sim = ($env.SIM_OUTAGE_URL || 'http://127.0.0.1:5678/webhook/sim-crm-outage') + '?lead_id=' + encodeURIComponent(v.lead_id);
+if (v.lead.crm === 'zoho') {
+  const url = outage ? sim : ($env.ZOHO_API_BASE || 'https://www.zohoapis.com') + '/crm/v8/Leads/upsert';
+  return [{ json: { crm: 'zoho', url, body: zohoLeadUpsert(v.lead, q) } }];
+}
+const url = outage ? sim : ($env.HUBSPOT_BASE || 'https://api.hubapi.com') + '/crm/v3/objects/contacts/batch/upsert';
+return [{ json: { crm: 'hubspot', url, body: hubspotContactUpsert(v.lead) } }];`),
     at(16, 4),
   );
+  f.ifTrue("Zoho CRM?", "$json.crm === 'zoho'", at(17, 4));
   f.http("HubSpot: upsert contact", {
     method: "POST",
     url: "={{ $json.url }}",
     json: "$json.body",
     timeout: 15000,
-    pos: at(17, 4),
+    pos: at(18, 5),
     node: { ...RETRY, onError: "continueErrorOutput", credentials: credRef(CRED.hubspot), notes: "Create or update by email. 3 tries, 2 s apart." },
   });
   Object.assign(f.nodes.at(-1).parameters, { authentication: "genericCredentialType", genericAuthType: "httpHeaderAuth" });
+  f.http("Zoho: upsert lead", {
+    method: "POST",
+    url: "={{ $json.url }}",
+    json: "$json.body",
+    timeout: 15000,
+    pos: at(18, 3),
+    node: { ...RETRY, onError: "continueErrorOutput", credentials: oauthRef(CRED.zoho), notes: "Upsert by email. OAuth2 (Zoho self client): n8n renews the access token on a 401." },
+  });
+  Object.assign(f.nodes.at(-1).parameters, { authentication: "genericCredentialType", genericAuthType: "oAuth2Api" });
   f.code(
     "Record contact",
     js([], `${EVENT_FN}
 const v = ${V};
+const crm = $('Prepare contact').first().json.crm;
+const name = crm === 'zoho' ? 'Zoho CRM' : 'HubSpot';
+const what = crm === 'zoho' ? 'lead' : 'contact';
 const res = $input.first().json;
 if (res.error) {
-  return [event(v.lead_id, 'crm_contact', 'failed', 'HubSpot did not accept the contact after 3 attempts: ' + errorText(res.error), { attempts: 3, error: errorText(res.error) })];
+  return [event(v.lead_id, 'crm_contact', 'failed', name + ' did not accept the ' + what + ' after 3 attempts: ' + errorText(res.error), { crm, attempts: 3, error: errorText(res.error) })];
+}
+if (crm === 'zoho') {
+  const r = Array.isArray(res.data) ? res.data[0] : null;
+  if (!r || r.status !== 'success' || !r.details || !r.details.id) {
+    return [event(v.lead_id, 'crm_contact', 'failed', 'Zoho CRM refused the lead: ' + errorText(r ? (r.code + ' ' + (r.message || '')) : 'no data in response'), { crm, error: r ? r.code : 'unexpected response' })];
+  }
+  const created = r.action !== 'update';
+  return [event(v.lead_id, 'crm_contact', 'ok', (created ? 'New lead created' : 'Existing lead updated') + ' in Zoho CRM (id ' + r.details.id + ').', { crm, contact_id: String(r.details.id), created, module: 'Leads', lead_status: 'Not Contacted' })];
 }
 const r = Array.isArray(res.results) ? res.results[0] : null;
-if (!r || !r.id) return [event(v.lead_id, 'crm_contact', 'failed', 'HubSpot answered without a contact id.', { error: 'unexpected response' })];
-return [event(v.lead_id, 'crm_contact', 'ok', (r.new === false ? 'Existing contact updated' : 'New contact created') + ' in HubSpot (id ' + r.id + ').', { contact_id: String(r.id), created: r.new !== false, lifecycle_stage: 'lead', lead_status: 'NEW' })];`),
-    at(18, 4),
+if (!r || !r.id) return [event(v.lead_id, 'crm_contact', 'failed', 'HubSpot answered without a contact id.', { crm, error: 'unexpected response' })];
+return [event(v.lead_id, 'crm_contact', 'ok', (r.new === false ? 'Existing contact updated' : 'New contact created') + ' in HubSpot (id ' + r.id + ').', { crm, contact_id: String(r.id), created: r.new !== false, lifecycle_stage: 'lead', lead_status: 'NEW' })];`),
+    at(19, 4),
   );
-  logEvent(f, "Log: contact", at(19, 4));
-  f.ifTrue("Contact saved?", "$('Record contact').first().json.state === 'ok'", at(20, 4));
+  logEvent(f, "Log: contact", at(20, 4));
+  f.ifTrue("Contact saved?", "$('Record contact').first().json.state === 'ok'", at(21, 4));
 
-  // --- HubSpot note
+  // --- CRM note
   f.code(
     "Prepare note",
     js(["messages.fn.js"], `
 const v = ${V};
 const q = JSON.parse($('Check AI answer').first().json.detail);
+const crm = $('Prepare contact').first().json.crm;
 const contactId = JSON.parse($('Record contact').first().json.detail).contact_id;
-return [{ json: { body: hubspotNote(v.lead, q, { contactId, leadId: v.lead_id, nowMs: Date.now() }) } }];`),
-    at(21, 3),
+if (crm === 'zoho') {
+  return [{ json: { crm, url: ($env.ZOHO_API_BASE || 'https://www.zohoapis.com') + '/crm/v8/Leads/' + encodeURIComponent(contactId) + '/Notes', body: zohoNote(v.lead, q, { leadId: v.lead_id }) } }];
+}
+return [{ json: { crm, url: ($env.HUBSPOT_BASE || 'https://api.hubapi.com') + '/crm/v3/objects/notes', body: hubspotNote(v.lead, q, { contactId, leadId: v.lead_id, nowMs: Date.now() }) } }];`),
+    at(22, 3),
   );
+  f.ifTrue("Zoho note?", "$json.crm === 'zoho'", at(23, 3));
   f.http("HubSpot: add note", {
     method: "POST",
-    url: "={{ ($env.HUBSPOT_BASE || 'https://api.hubapi.com') + '/crm/v3/objects/notes' }}",
+    url: "={{ $json.url }}",
     json: "$json.body",
     timeout: 15000,
-    pos: at(22, 3),
+    pos: at(24, 4),
     node: { ...RETRY, onError: "continueErrorOutput", credentials: credRef(CRED.hubspot), notes: "Note with score, reason, red flags and the brief, linked to the contact." },
   });
   Object.assign(f.nodes.at(-1).parameters, { authentication: "genericCredentialType", genericAuthType: "httpHeaderAuth" });
+  f.http("Zoho: add note", {
+    method: "POST",
+    url: "={{ $json.url }}",
+    json: "$json.body",
+    timeout: 15000,
+    pos: at(24, 2),
+    node: { ...RETRY, onError: "continueErrorOutput", credentials: oauthRef(CRED.zoho), notes: "Note on the lead with the score, reason and brief." },
+  });
+  Object.assign(f.nodes.at(-1).parameters, { authentication: "genericCredentialType", genericAuthType: "oAuth2Api" });
   f.code(
     "Record note",
     js([], `${EVENT_FN}
 const v = ${V};
+const crm = $('Prepare note').first().json.crm;
+const name = crm === 'zoho' ? 'Zoho CRM' : 'HubSpot';
 const res = $input.first().json;
-if (res.error || !res.id) return [event(v.lead_id, 'crm_note', 'failed', 'HubSpot did not save the note: ' + errorText(res.error || 'no id returned'), { error: errorText(res.error || 'no id') })];
-return [event(v.lead_id, 'crm_note', 'ok', 'Note with the score, reason and brief attached to the contact (note id ' + res.id + ').', { note_id: String(res.id) })];`),
-    at(23, 3),
+const id = crm === 'zoho'
+  ? (Array.isArray(res.data) && res.data[0] && res.data[0].status === 'success' && res.data[0].details ? res.data[0].details.id : null)
+  : res.id;
+if (res.error || !id) return [event(v.lead_id, 'crm_note', 'failed', name + ' did not save the note: ' + errorText(res.error || 'no id returned'), { crm, error: errorText(res.error || 'no id') })];
+return [event(v.lead_id, 'crm_note', 'ok', 'Note with the score, reason and brief attached to the ' + (crm === 'zoho' ? 'lead' : 'contact') + ' (note id ' + id + ').', { crm, note_id: String(id) })];`),
+    at(25, 3),
   );
   f.code(
     "Skip note",
     js([], `${EVENT_FN}
 const v = ${V};
-return [event(v.lead_id, 'crm_note', 'skipped', 'Skipped: there is no contact to attach a note to. The team alert carries the full details instead.')];`),
-    at(23, 5),
+return [event(v.lead_id, 'crm_note', 'skipped', 'Skipped: there is no CRM record to attach a note to. The team alert carries the full details instead.')];`),
+    at(25, 5),
   );
-  logEvent(f, "Log: note", at(24, 4));
+  logEvent(f, "Log: note", at(26, 4));
 
   // --- reply to the lead
   f.code(
@@ -303,7 +350,7 @@ const v = ${V};
 const q = JSON.parse($('Check AI answer').first().json.detail);
 const statusUrl = v.public_base + '/status?id=' + v.lead_id;
 return [{ json: { body: leadReplyEmail(v.lead, q, { from: $env.EMAIL_FROM_LEADS, statusUrl, leadId: v.lead_id }) } }];`),
-    at(25, 4),
+    at(27, 4),
   );
   f.http("Resend: reply to lead", {
     method: "POST",
@@ -311,7 +358,7 @@ return [{ json: { body: leadReplyEmail(v.lead, q, { from: $env.EMAIL_FROM_LEADS,
     headers: { "Idempotency-Key": `={{ 'lead-reply-' + ${V}.lead_id }}` },
     json: "$json.body",
     timeout: 15000,
-    pos: at(26, 4),
+    pos: at(28, 4),
     node: { ...RETRY, onError: "continueErrorOutput", credentials: credRef(CRED.resend), notes: "Idempotency key per lead, so a retry never sends twice." },
   });
   Object.assign(f.nodes.at(-1).parameters, { authentication: "genericCredentialType", genericAuthType: "httpHeaderAuth" });
@@ -322,9 +369,9 @@ const v = ${V};
 const res = $input.first().json;
 if (res.error || !res.id) return [event(v.lead_id, 'reply_email', 'failed', 'The reply email could not be sent: ' + errorText(res.error || 'no id returned'), { error: errorText(res.error || 'no id') })];
 return [event(v.lead_id, 'reply_email', 'ok', 'Reply email accepted by the email service for delivery.', { email_id: res.id, to: JSON.parse($('Event: received').first().json.detail).email_masked })];`),
-    at(27, 4),
+    at(29, 4),
   );
-  logEvent(f, "Log: reply", at(28, 4));
+  logEvent(f, "Log: reply", at(30, 4));
 
   // --- team alert
   f.code(
@@ -333,17 +380,20 @@ return [event(v.lead_id, 'reply_email', 'ok', 'Reply email accepted by the email
 const v = ${V};
 const q = JSON.parse($('Check AI answer').first().json.detail);
 const contact = $('Record contact').first().json;
+const crm = $('Prepare contact').first().json.crm;
+const crmName = crm === 'zoho' ? 'Zoho CRM' : 'HubSpot';
 const problems = [];
-if (contact.state !== 'ok') problems.push('HubSpot contact not saved');
+if (contact.state !== 'ok') problems.push(crmName + (crm === 'zoho' ? ' lead' : ' contact') + ' not saved');
 const note = $('Log: note').first().json;
-if (note.state === 'failed') problems.push('HubSpot note not saved');
+if (note.state === 'failed') problems.push(crmName + ' note not saved');
 if ($('Record reply').first().json.state !== 'ok') problems.push('reply email not sent');
 const contactId = contact.state === 'ok' ? JSON.parse(contact.detail).contact_id : null;
-const portal = $env.HUBSPOT_PORTAL_ID;
-const contactUrl = contactId && portal ? 'https://app.hubspot.com/contacts/' + portal + '/record/0-1/' + contactId : null;
+let contactUrl = null;
+if (contactId && crm === 'hubspot' && $env.HUBSPOT_PORTAL_ID) contactUrl = 'https://app.hubspot.com/contacts/' + $env.HUBSPOT_PORTAL_ID + '/record/0-1/' + contactId;
+if (contactId && crm === 'zoho' && $env.ZOHO_ORG_ID) contactUrl = ($env.ZOHO_CRM_WEB || 'https://crm.zoho.com') + '/crm/org' + $env.ZOHO_ORG_ID + '/tab/Leads/' + contactId;
 const statusUrl = v.public_base + '/status?id=' + v.lead_id;
-return [{ json: { problems, body: teamAlertEmail(v.lead, q, { from: $env.EMAIL_FROM_ALERTS || $env.EMAIL_FROM_LEADS, to: $env.TEAM_EMAIL, statusUrl, crm: { contactUrl }, problems }) } }];`),
-    at(29, 4),
+return [{ json: { problems, body: teamAlertEmail(v.lead, q, { from: $env.EMAIL_FROM_ALERTS || $env.EMAIL_FROM_LEADS, to: $env.TEAM_EMAIL, statusUrl, crm: { name: crm, saved: Boolean(contactId), contactUrl }, problems }) } }];`),
+    at(31, 4),
   );
   f.http("Resend: team alert", {
     method: "POST",
@@ -351,7 +401,7 @@ return [{ json: { problems, body: teamAlertEmail(v.lead, q, { from: $env.EMAIL_F
     headers: { "Idempotency-Key": `={{ 'lead-alert-' + ${V}.lead_id }}` },
     json: "$json.body",
     timeout: 15000,
-    pos: at(30, 4),
+    pos: at(32, 4),
     node: { ...RETRY, onError: "continueErrorOutput", credentials: credRef(CRED.resend) },
   });
   Object.assign(f.nodes.at(-1).parameters, { authentication: "genericCredentialType", genericAuthType: "httpHeaderAuth" });
@@ -366,9 +416,9 @@ const summary = problems.length
   ? 'Urgent alert sent to the team: ' + problems.join('; ') + '. Nothing is lost: the alert carries the full lead.'
   : 'The team was emailed the lead, its score and the HubSpot link.';
 return [event(v.lead_id, 'team_alert', 'ok', summary, { email_id: res.id, urgent: problems.length > 0, problems })];`),
-    at(31, 4),
+    at(33, 4),
   );
-  logEvent(f, "Log: alert", at(32, 4));
+  logEvent(f, "Log: alert", at(34, 4));
 
   f.code(
     "Finish",
@@ -385,16 +435,16 @@ const summary = outcome === 'ok'
     ? 'Finished in ' + secs + ' s with a handled failure: ' + problems.join('; ') + '. The team was alerted.'
     : 'Finished with failures and the team alert could not be sent. The error workflow takes over.';
 return [event(v.lead_id, 'done', outcome === 'failed' ? 'failed' : 'ok', summary, { outcome, seconds: secs, problems })];`),
-    at(33, 4),
+    at(35, 4),
   );
-  logEvent(f, "Log: done", at(34, 4));
-  f.ifTrue("Alert failed?", "$('Record alert').first().json.state !== 'ok'", at(35, 4));
+  logEvent(f, "Log: done", at(36, 4));
+  f.ifTrue("Alert failed?", "$('Record alert').first().json.state !== 'ok'", at(37, 4));
   f.add(
     "Fail execution",
     "n8n-nodes-base.stopAndError",
     1,
     { errorMessage: `={{ 'Lead ' + ${V}.lead_id + ': team alert could not be sent' }}` },
-    at(36, 3),
+    at(38, 3),
     { notes: "Marks the execution as failed so the Error Workflow alerts by its own route." },
   );
 
@@ -417,13 +467,17 @@ return [event(v.lead_id, 'done', outcome === 'failed' ? 'failed' : 'ok', summary
   f.connect("Simulated AI answer", "Check AI answer");
   f.connect("Check AI answer", "Log: qualified");
   f.connect("Log: qualified", "Prepare contact");
-  f.connect("Prepare contact", "HubSpot: upsert contact");
+  f.connect("Prepare contact", "Zoho CRM?");
+  f.connect("Zoho CRM?", "Zoho: upsert lead", 0).connect("Zoho CRM?", "HubSpot: upsert contact", 1);
   f.connect("HubSpot: upsert contact", "Record contact", 0).connect("HubSpot: upsert contact", "Record contact", 1);
+  f.connect("Zoho: upsert lead", "Record contact", 0).connect("Zoho: upsert lead", "Record contact", 1);
   f.connect("Record contact", "Log: contact");
   f.connect("Log: contact", "Contact saved?");
   f.connect("Contact saved?", "Prepare note", 0).connect("Contact saved?", "Skip note", 1);
-  f.connect("Prepare note", "HubSpot: add note");
+  f.connect("Prepare note", "Zoho note?");
+  f.connect("Zoho note?", "Zoho: add note", 0).connect("Zoho note?", "HubSpot: add note", 1);
   f.connect("HubSpot: add note", "Record note", 0).connect("HubSpot: add note", "Record note", 1);
+  f.connect("Zoho: add note", "Record note", 0).connect("Zoho: add note", "Record note", 1);
   f.connect("Record note", "Log: note");
   f.connect("Skip note", "Log: note");
   f.connect("Log: note", "Prepare reply");

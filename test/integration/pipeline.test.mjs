@@ -209,3 +209,48 @@ describe("retention", () => {
     expect(gone).toBe(true);
   }, 60_000);
 });
+
+describe("Zoho CRM instead of HubSpot", () => {
+  it("renews the expired OAuth token, creates the lead and its note, and says Zoho on the status page", async () => {
+    const { st, id } = await runToEnd(lead({ crm: "zoho", email: "zoho1@brightlane.io" }));
+    expect(st.crm).toBe("zoho");
+    expect(step(st, "crm_contact")).toMatchObject({ label: "Zoho CRM lead", state: "ok" });
+    expect(step(st, "crm_note")).toMatchObject({ label: "Zoho CRM note", state: "ok" });
+    expect(reqs("/hubspot")).toHaveLength(0);
+    // first call with the expired token got 401, n8n refreshed once, then the same call succeeded
+    const tokenCalls = reqs("/zoho-accounts/oauth/v2/token");
+    expect(tokenCalls).toHaveLength(1);
+    expect(tokenCalls[0].form).toMatchObject({ grant_type: "refresh_token", refresh_token: "zoho-refresh-1" });
+    const ups = reqs("/zoho/crm/v8/Leads/upsert");
+    expect(ups.map((q) => q.headers.authorization)).toEqual(["Bearer zoho-access-1-expired", "Bearer zoho-access-2"]);
+    expect(ups[1].body).toMatchObject({ duplicate_check_fields: ["Email"], data: [{ Email: "zoho1@brightlane.io", Company: "Brightlane", Last_Name: "Rao", First_Name: "Asha" }] });
+    const leadId = step(st, "crm_contact").detail.contact_id;
+    const [note] = reqs(`/zoho/crm/v8/Leads/${leadId}/Notes`);
+    expect(note.body.data[0].Note_Title).toBe("Lead score 84/100 (hot)");
+    expect(note.body.data[0].Note_Content).toContain(id);
+    const alert = emails().find((e) => e.key.startsWith("lead-alert-"));
+    expect(alert.text).toContain(`Zoho CRM record: https://crm.zoho.test/crm/org777/tab/Leads/${leadId}`);
+  }, 60_000);
+  it("keeps using the renewed token (and the refresh token survives the renewal)", async () => {
+    await runToEnd(lead({ crm: "zoho" }));
+    expect(reqs("/zoho-accounts")).toHaveLength(0);
+    s.mocks.zoho.validToken = "zoho-access-3"; // the token expires again
+    const { st } = await runToEnd(lead({ crm: "zoho" }));
+    expect(step(st, "crm_contact").state).toBe("ok");
+    expect(reqs("/zoho-accounts/oauth/v2/token")[0].form.refresh_token).toBe("zoho-refresh-1");
+  }, 60_000);
+  it("a record Zoho refuses (200 with an error inside) is a failed step, not a success", async () => {
+    s.mocks.faults.zohoLead.push("mandatory");
+    const { st } = await runToEnd(lead({ crm: "zoho" }));
+    expect(step(st, "crm_contact").state).toBe("failed");
+    expect(step(st, "crm_contact").summary).toMatch(/MANDATORY_NOT_FOUND/);
+    expect(step(st, "crm_note").state).toBe("skipped");
+    expect(st.outcome).toBe("partial");
+    expect(emails().find((e) => e.key.startsWith("lead-alert-")).subject).toMatch(/Zoho CRM lead not saved/);
+  }, 60_000);
+  it("simulated outage on the Zoho path never calls Zoho", async () => {
+    const { st } = await runToEnd(lead({ crm: "zoho", simulate: "crm_outage" }));
+    expect(step(st, "crm_contact")).toMatchObject({ label: "Zoho CRM lead", state: "failed" });
+    expect(reqs("/zoho")).toHaveLength(0);
+  }, 60_000);
+});

@@ -15,7 +15,7 @@
 
   var MSG_MIN = 20;
   var MSG_MAX = 1500;
-  var FIELD_ORDER = ['name', 'email', 'company', 'website', 'service', 'budget', 'timeline', 'message', 'consent'];
+  var FIELD_ORDER = ['name', 'email', 'company', 'website', 'service', 'budget', 'timeline', 'message', 'crm', 'consent'];
   var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
   var sending = false;
 
@@ -98,6 +98,7 @@
   }
   function collect() {
     var sim = form.querySelector('input[name="simulate"]:checked');
+    var crm = form.querySelector('input[name="crm"]:checked');
     return {
       name: val('name'),
       email: val('email'),
@@ -109,6 +110,7 @@
       message: val('message'),
       consent: !!controlFor('consent').checked,
       simulate: sim ? sim.value : 'none',
+      crm: crm ? crm.value : 'hubspot',
       fax: controlFor('fax').value,
       started_at: startedAt
     };

@@ -6,6 +6,7 @@ const LEAD_OPTIONS = {
   budget: ['Under $2k', '$2k–5k', '$5k–15k', '$15k–50k', '$50k+'],
   timeline: ['As soon as possible', 'Within 1 month', '1–3 months', '3+ months', 'Just exploring'],
   simulate: ['none', 'crm_outage', 'ai_invalid'],
+  crm: ['hubspot', 'zoho'],
 };
 
 const DISPOSABLE_DOMAINS = [
@@ -27,7 +28,7 @@ function cleanText(v) {
  *   { kind: 'invalid', fields: { field: message } }
  *   { kind: 'ok', lead }
  */
-function validateLead(body, nowMs) {
+function validateLead(body, nowMs, { zohoEnabled = true } = {}) {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return { kind: 'invalid', fields: { form: 'The request body must be a JSON object.' } };
   }
@@ -82,6 +83,10 @@ function validateLead(body, nowMs) {
   const simulate = body.simulate === undefined || body.simulate === null || body.simulate === '' ? 'none' : body.simulate;
   if (!LEAD_OPTIONS.simulate.includes(simulate)) fields.simulate = 'Unknown simulation option.';
 
+  const crm = body.crm === undefined || body.crm === null || body.crm === '' ? 'hubspot' : body.crm;
+  if (!LEAD_OPTIONS.crm.includes(crm)) fields.crm = 'Unknown CRM option.';
+  else if (crm === 'zoho' && !zohoEnabled) fields.crm = 'Zoho CRM is not connected on this demo yet. Please pick HubSpot.';
+
   if (Object.keys(fields).length) return { kind: 'invalid', fields };
 
   const links = (message.match(URL_RE) || []).length;
@@ -102,6 +107,7 @@ function validateLead(body, nowMs) {
       timeline,
       message,
       simulate,
+      crm,
       fill_seconds: Math.round(elapsed / 100) / 10,
     },
   };

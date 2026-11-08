@@ -904,3 +904,9 @@ h2 {
   .spinner { animation: none; border-right-color: currentColor; opacity: 0.6; }
   .state-running .tl-icon::before { display: none; }
 }
+
+/* CRM picker */
+.crm-choice { border: 0; margin: 0; padding: 0; min-width: 0; }
+.crm-choice legend { font-weight: 600; font-size: 0.92rem; margin-bottom: 2px; padding: 0; }
+.crm-choice__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+@media (max-width: 420px) { .crm-choice__grid { grid-template-columns: 1fr; } }

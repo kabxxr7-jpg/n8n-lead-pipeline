@@ -40,9 +40,13 @@ function buildStatus(rows, nowMs) {
   const last = events[events.length - 1];
   const stalled = !finished && nowMs - last.t > STALL_MS;
 
+  const crm = received.crm === 'zoho' ? 'zoho' : 'hubspot';
+  const crmName = crm === 'zoho' ? 'Zoho CRM' : 'HubSpot';
+  const labelFor = (key, label) => (key === 'crm_contact' ? `${crmName} ${crm === 'zoho' ? 'lead' : 'contact'}` : key === 'crm_note' ? `${crmName} note` : label);
   let qualification = null;
   let runningAssigned = false;
-  const steps = STEPS.map(([key, label]) => {
+  const steps = STEPS.map(([key, baseLabel]) => {
+    const label = labelFor(key, baseLabel);
     const list = byStep[key] || [];
     const final = [...list].reverse().find((e) => e.state !== 'retrying');
     const retries = list.filter((e) => e.state === 'retrying');
@@ -80,6 +84,7 @@ function buildStatus(rows, nowMs) {
     finished,
     outcome: finished ? doneDetail.outcome || 'ok' : null,
     stalled,
+    crm,
     lead: { first_name: received.first_name || '', company: received.company || '', email_masked: received.email_masked || '' },
     qualification,
     simulated: received.simulate && received.simulate !== 'none' ? [received.simulate] : [],

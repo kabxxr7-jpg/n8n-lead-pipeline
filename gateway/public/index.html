@@ -16,7 +16,7 @@
   <div class="demo-banner" role="note" aria-label="Demo notice">
     <div class="demo-banner__inner">
       <span class="demo-banner__tag">Live demo</span>
-      <span>Fernbrook Studio is a fictional business. Your submission really runs through an n8n workflow: AI lead scoring (Google Gemini), a HubSpot CRM (free test account) and a real email reply to the address you enter.</span>
+      <span>Fernbrook Studio is a fictional business. Your submission really runs through an n8n workflow: AI lead scoring (Google Gemini), a real CRM (HubSpot or Zoho CRM, free test accounts) and a real email reply to the address you enter.</span>
     </div>
   </div>
 
@@ -49,8 +49,8 @@
                 <span class="pipeline__desc">Google Gemini scores fit and urgency, checked against a strict schema.</span></span>
             </li>
             <li class="pipeline__item">
-              <span class="pipeline__name">HubSpot contact + note
-                <span class="pipeline__desc">Contact upserted in the CRM with the score and your message attached.</span></span>
+              <span class="pipeline__name">CRM record + note
+                <span class="pipeline__desc">HubSpot contact or Zoho CRM lead (your pick), with the score and your message attached.</span></span>
             </li>
             <li class="pipeline__item">
               <span class="pipeline__name">Email reply + team alert
@@ -67,6 +67,7 @@
           <li>n8n (self-hosted)</li>
           <li>Google Gemini</li>
           <li>HubSpot CRM</li>
+          <li>Zoho CRM</li>
           <li>Resend email</li>
         </ul>
       </section>
@@ -153,6 +154,23 @@
             <div class="field-error" id="e-message" aria-live="polite"></div>
           </div>
 
+          <div class="field" data-field="crm">
+            <fieldset class="crm-choice">
+              <legend>Which CRM should your lead go to?</legend>
+              <div class="crm-choice__grid">
+                <label class="radio">
+                  <input type="radio" name="crm" value="hubspot" checked>
+                  <span><strong>HubSpot</strong><span>Contact + note (free CRM)</span></span>
+                </label>
+                <label class="radio">
+                  <input type="radio" name="crm" value="zoho">
+                  <span><strong>Zoho CRM</strong><span>Lead + note (free edition)</span></span>
+                </label>
+              </div>
+            </fieldset>
+            <div class="field-error" id="e-crm" aria-live="polite"></div>
+          </div>
+
           <!-- Honeypot: hidden from humans, left empty by real visitors -->
           <div class="hp-field" aria-hidden="true">
             <label for="f-fax">Fax (leave empty)</label>
@@ -171,7 +189,7 @@
                 </label>
                 <label class="radio">
                   <input type="radio" name="simulate" value="crm_outage">
-                  <span><strong>Simulated: CRM outage</strong><span>HubSpot is down: watch the retries, the team alert and the lead still getting a reply.</span></span>
+                  <span><strong>Simulated: CRM outage</strong><span>The CRM is down: watch the retries, the team alert and the lead still getting a reply.</span></span>
                 </label>
                 <label class="radio">
                   <input type="radio" name="simulate" value="ai_invalid">

@@ -31,6 +31,40 @@ function hubspotContactUpsert(lead) {
   return { inputs: [{ idProperty: 'email', id: lead.email, properties }] };
 }
 
+const CRM_NAMES = { hubspot: 'HubSpot', zoho: 'Zoho CRM' };
+
+function zohoLeadUpsert(lead, q) {
+  const record = {
+    Last_Name: lead.last_name || lead.first_name,
+    First_Name: lead.last_name ? lead.first_name : '',
+    Email: lead.email,
+    Company: lead.company,
+    Lead_Status: 'Not Contacted',
+    Description: oneLine(`Score ${q.score}/100 (${q.tier}). ${q.reason}`, 1000),
+  };
+  if (lead.website) record.Website = websiteUrl(lead.website);
+  return { data: [record], duplicate_check_fields: ['Email'], trigger: [] };
+}
+
+function plainNoteText(lead, q, leadId) {
+  return [
+    `Lead score ${q.score}/100 (${q.tier}), scored by ${q.scored_by === 'ai' ? 'Google Gemini' : 'the rules fallback'}.`,
+    q.reason,
+    `Suggested next step: ${NEXT_STEP_TEXT[q.next_step] || q.next_step}`,
+    `Red flags: ${q.red_flags.length ? q.red_flags.join(', ') : 'none'}`,
+    `Service: ${lead.service} | Budget: ${lead.budget} | Timeline: ${lead.timeline}`,
+    '',
+    'Message:',
+    lead.message,
+    '',
+    `Source: n8n lead pipeline demo. Lead id ${leadId}.`,
+  ].join('\n');
+}
+
+function zohoNote(lead, q, { leadId }) {
+  return { data: [{ Note_Title: oneLine(`Lead score ${q.score}/100 (${q.tier})`, 120), Note_Content: plainNoteText(lead, q, leadId) }] };
+}
+
 const NEXT_STEP_TEXT = {
   book_call: 'Book a discovery call',
   send_proposal_questions: 'Send scoping questions',
@@ -102,9 +136,10 @@ function teamAlertEmail(lead, q, { from, to, statusUrl, crm, problems }) {
       : `[${q.tier.toUpperCase()} ${q.score}] New lead: ${lead.company}`,
     150,
   );
-  const crmLine = crm.contactUrl
-    ? `HubSpot contact: ${crm.contactUrl}`
-    : 'HubSpot: NOT SAVED. The details below are the only copy; add them by hand.';
+  const crmName = CRM_NAMES[crm.name] || 'CRM';
+  const crmLine = crm.saved
+    ? `${crmName} record: ${crm.contactUrl || '(saved; open the CRM to see it)'}`
+    : `${crmName}: NOT SAVED. The details below are the only copy; add them by hand.`;
   const text = [
     urgent ? `Something failed for this lead: ${problems.join('; ')}. The lead still got the reply email unless listed above.` : 'New lead qualified by the pipeline.',
     '',

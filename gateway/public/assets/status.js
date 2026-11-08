@@ -261,7 +261,7 @@
       els.outcome.className = 'card outcome fade-in' + (o === 'partial' ? ' is-partial' : o === 'failed' ? ' is-failed' : '');
       if (o === 'ok') {
         els.outcomeTitle.textContent = total ? 'All steps done in ' + total : 'All steps done';
-        els.outcomeText.textContent = 'The lead was scored, saved to HubSpot, replied to and handed to the team.';
+        els.outcomeText.textContent = 'The lead was scored, saved to the CRM, replied to and handed to the team.';
         setPill('is-done', 'Completed');
         els.title.textContent = 'All done';
       } else if (o === 'partial') {

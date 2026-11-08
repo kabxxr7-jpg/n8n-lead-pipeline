@@ -41,7 +41,11 @@ async function main() {
     gemini: { name: "x-goog-api-key", value: env.GEMINI_API_KEY },
     hubspot: { name: "Authorization", value: `Bearer ${env.HUBSPOT_TOKEN}` },
     resend: { name: "Authorization", value: `Bearer ${env.RESEND_API_KEY}` },
+    zoho: env.ZOHO_REFRESH_TOKEN
+      ? { clientId: env.ZOHO_CLIENT_ID, clientSecret: env.ZOHO_CLIENT_SECRET, accessTokenUrl: `${env.ZOHO_ACCOUNTS_URL}/oauth/v2/token`, refreshToken: env.ZOHO_REFRESH_TOKEN }
+      : null,
   });
+  console.log(env.ZOHO_REFRESH_TOKEN ? "Zoho CRM credential stored (the form offers Zoho when ZOHO_ENABLED=true)." : "Zoho CRM not configured: placeholder credential, the form offers HubSpot only.");
   const ids = await n8n.syncWorkflows(creds);
   console.log(`data tables: ${Object.keys(tables).join(", ")}`);
   console.log(`workflows active: ${Object.keys(ids).join(", ")}`);

@@ -16,7 +16,8 @@
     "gateway": "node gateway/server.mjs",
     "setup": "node scripts/setup.mjs",
     "scan": "node scripts/secret-scan.mjs",
-    "local": "node scripts/run-local.mjs"
+    "local": "node scripts/run-local.mjs",
+    "zoho:connect": "node scripts/zoho-connect.mjs"
   },
   "devDependencies": {
     "vitest": "5.0.5"

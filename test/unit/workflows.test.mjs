@@ -22,7 +22,7 @@ describe.each(files)("%s", (file) => {
   it("has no secrets, only credential placeholders", () => {
     const text = JSON.stringify(wf);
     expect(text).not.toMatch(/re_[A-Za-z0-9]{20,}|pat-[a-z0-9-]{20,}|AIza[0-9A-Za-z_-]{30,}|Bearer [A-Za-z0-9]/);
-    for (const n of wf.nodes.filter((x) => x.credentials)) expect(n.credentials.httpHeaderAuth.id).toMatch(/^__CRED_[A-Z]+__$/);
+    for (const n of wf.nodes.filter((x) => x.credentials)) for (const c of Object.values(n.credentials)) expect(c.id).toMatch(/^__CRED_[A-Z]+__$/);
   });
   it("every outside call retries and has a timeout", () => {
     for (const n of wf.nodes.filter((x) => x.type === "n8n-nodes-base.httpRequest")) {
@@ -51,6 +51,10 @@ describe("intake", () => {
   it("answers the form before the slow steps", () => {
     expect(wf.connections["Log: received"].main[0][0].node).toBe("Accepted (202)");
     expect(node("Accepted (202)").parameters.options.responseCode).toBe(202);
+  });
+  it("Zoho calls use the OAuth2 credential, HubSpot calls the header credential", () => {
+    for (const n of ["Zoho: upsert lead", "Zoho: add note"]) expect(Object.keys(node(n).credentials)).toEqual(["oAuth2Api"]);
+    for (const n of ["HubSpot: upsert contact", "HubSpot: add note"]) expect(Object.keys(node(n).credentials)).toEqual(["httpHeaderAuth"]);
   });
   it("sends emails with idempotency keys", () => {
     for (const n of ["Resend: reply to lead", "Resend: team alert"]) {

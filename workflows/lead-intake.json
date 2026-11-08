@@ -23,7 +23,7 @@
       "parameters": {
         "mode": "runOnceForAllItems",
         "language": "javaScript",
-        "jsCode": "// Pure validation and spam-guard rules for a lead posted by the form.\n// Included into the \"Validate & spam guard\" Code node and unit tested directly.\n\nconst LEAD_OPTIONS = {\n  service: ['New website', 'Website redesign', 'SEO & content', 'Automation & integrations', 'Not sure yet'],\n  budget: ['Under $2k', '$2k–5k', '$5k–15k', '$15k–50k', '$50k+'],\n  timeline: ['As soon as possible', 'Within 1 month', '1–3 months', '3+ months', 'Just exploring'],\n  simulate: ['none', 'crm_outage', 'ai_invalid'],\n};\n\nconst DISPOSABLE_DOMAINS = [\n  'mailinator.com', 'guerrillamail.com', 'guerrillamail.net', '10minutemail.com', 'tempmail.com',\n  'temp-mail.org', 'yopmail.com', 'trashmail.com', 'getnada.com', 'sharklasers.com', 'dispostable.com',\n  'maildrop.cc', 'throwawaymail.com', 'fakeinbox.com', 'mintemail.com',\n];\n\nconst MIN_FILL_MS = 3000;\nconst URL_RE = /(https?:\\/\\/|www\\.)\\S+/gi;\n\nfunction cleanText(v) {\n  return typeof v === 'string' ? v.replace(/\\u0000/g, '').trim() : '';\n}\n\n/**\n * Returns one of:\n *   { kind: 'spam', reason }\n *   { kind: 'invalid', fields: { field: message } }\n *   { kind: 'ok', lead }\n */\nfunction validateLead(body, nowMs) {\n  if (body === null || typeof body !== 'object' || Array.isArray(body)) {\n    return { kind: 'invalid', fields: { form: 'The request body must be a JSON object.' } };\n  }\n\n  // --- spam guard first: bots get a clear 422, people never see it\n  if (cleanText(body.fax) !== '') return { kind: 'spam', reason: 'A hidden field that only bots fill in was filled in.' };\n  const started = Number(body.started_at);\n  if (!Number.isFinite(started) || started <= 0) {\n    return { kind: 'spam', reason: 'The form timing token is missing. Please reload the page and try again.' };\n  }\n  const elapsed = nowMs - started;\n  if (elapsed < MIN_FILL_MS) {\n    const secs = Math.max(0, elapsed / 1000).toFixed(1);\n    return { kind: 'spam', reason: `The form was sent ${secs} s after the page loaded. People need at least 3 s; that speed looks automated.` };\n  }\n\n  const fields = {};\n  const name = cleanText(body.name).replace(/\\s+/g, ' ');\n  const email = cleanText(body.email).toLowerCase();\n  const company = cleanText(body.company).replace(/\\s+/g, ' ');\n  const website = cleanText(body.website);\n  const message = cleanText(body.message).replace(/\\r\\n/g, '\\n');\n  const pick = (k) => (LEAD_OPTIONS[k].includes(body[k]) ? body[k] : null);\n\n  if (name.length < 2 || name.length > 80) fields.name = 'Please enter your name (2–80 characters).';\n  else if (/[<>]|https?:|www\\./i.test(name)) fields.name = 'Names cannot contain links or angle brackets.';\n\n  if (email.length > 254 || !/^[^\\s@<>,;:\"'()]+@[a-z0-9-]+(\\.[a-z0-9-]+)*\\.[a-z]{2,}$/i.test(email)) {\n    fields.email = 'Please enter a valid email address.';\n  } else if (DISPOSABLE_DOMAINS.includes(email.split('@')[1])) {\n    fields.email = 'Please use an email address you can check; disposable inboxes are blocked.';\n  }\n\n  if (company.length < 1 || company.length > 120) fields.company = 'Please enter your company (1–120 characters).';\n  else if (/[<>]|https?:|www\\./i.test(company)) fields.company = 'Company names cannot contain links or angle brackets.';\n\n  if (website.length > 200) fields.website = 'Website must be at most 200 characters.';\n  else if (website && !/^(https?:\\/\\/)?[a-z0-9-]+(\\.[a-z0-9-]+)+(\\/\\S*)?$/i.test(website)) {\n    fields.website = 'That does not look like a website address (example: example.com).';\n  }\n\n  const service = pick('service');\n  const budget = pick('budget');\n  const timeline = pick('timeline');\n  if (!service) fields.service = 'Please choose a service.';\n  if (!budget) fields.budget = 'Please choose a budget range.';\n  if (!timeline) fields.timeline = 'Please choose a timeline.';\n\n  if (message.length < 20 || message.length > 1500) fields.message = 'Please describe the project in 20–1500 characters.';\n  if (body.consent !== true) fields.consent = 'Please tick the box to agree to the demo terms.';\n\n  const simulate = body.simulate === undefined || body.simulate === null || body.simulate === '' ? 'none' : body.simulate;\n  if (!LEAD_OPTIONS.simulate.includes(simulate)) fields.simulate = 'Unknown simulation option.';\n\n  if (Object.keys(fields).length) return { kind: 'invalid', fields };\n\n  const links = (message.match(URL_RE) || []).length;\n  if (links > 2) return { kind: 'spam', reason: `The message contains ${links} links. Lead forms that carry several links are almost always spam.` };\n\n  const parts = name.split(' ');\n  return {\n    kind: 'ok',\n    lead: {\n      name,\n      first_name: parts[0],\n      last_name: parts.slice(1).join(' '),\n      email,\n      company,\n      website,\n      service,\n      budget,\n      timeline,\n      message,\n      simulate,\n      fill_seconds: Math.round(elapsed / 100) / 10,\n    },\n  };\n}\n\n/** a.b@example.com -> a••@example.com */\nfunction maskEmail(email) {\n  const [local, domain] = String(email).split('@');\n  if (!domain) return '';\n  return `${local.slice(0, Math.min(2, local.length))}••@${domain}`;\n}\n\n/** UTC day key, e.g. 2026-11-08 */\nfunction dayKey(ms) {\n  return new Date(ms).toISOString().slice(0, 10);\n}\n\n/**\n * Rate limits, from rows of the leads table that match this email hash or today's day key.\n * rows: [{ email_hash, day, createdAt }]\n */\nfunction checkLimits(rows, { emailHash, nowMs, dailyCap }) {\n  const today = dayKey(nowMs);\n  const mine = rows.filter((r) => r && r.email_hash === emailHash);\n  const recent = mine\n    .map((r) => Date.parse(r.createdAt))\n    .filter((t) => Number.isFinite(t) && nowMs - t < 24 * 3600e3)\n    .sort((a, b) => b - a);\n  const COOLDOWN_MS = 5 * 60e3;\n  if (recent.length && nowMs - recent[0] < COOLDOWN_MS) {\n    return { ok: false, error: 'rate_limited', retry_after_s: Math.ceil((COOLDOWN_MS - (nowMs - recent[0])) / 1000) };\n  }\n  if (recent.length >= 3) {\n    return { ok: false, error: 'rate_limited', retry_after_s: Math.ceil((recent[2] + 24 * 3600e3 - nowMs) / 1000) };\n  }\n  const todayCount = rows.filter((r) => r && r.day === today).length;\n  if (todayCount >= dailyCap) return { ok: false, error: 'daily_cap' };\n  return { ok: true };\n}\n\nconst crypto = require('crypto');\nconst nowMs = Date.now();\nconst r = validateLead($input.first().json.body, nowMs);\nif (r.kind !== 'ok') return [{ json: r }];\nconst email_hash = crypto.createHash('sha256').update(r.lead.email).digest('hex');\nreturn [{ json: {\n  kind: 'ok',\n  lead: r.lead,\n  lead_id: crypto.randomUUID(),\n  email_hash,\n  day: dayKey(nowMs),\n  public_base: ($env.PUBLIC_BASE_URL || '').replace(/\\/$/, ''),\n} }];"
+        "jsCode": "// Pure validation and spam-guard rules for a lead posted by the form.\n// Included into the \"Validate & spam guard\" Code node and unit tested directly.\n\nconst LEAD_OPTIONS = {\n  service: ['New website', 'Website redesign', 'SEO & content', 'Automation & integrations', 'Not sure yet'],\n  budget: ['Under $2k', '$2k–5k', '$5k–15k', '$15k–50k', '$50k+'],\n  timeline: ['As soon as possible', 'Within 1 month', '1–3 months', '3+ months', 'Just exploring'],\n  simulate: ['none', 'crm_outage', 'ai_invalid'],\n  crm: ['hubspot', 'zoho'],\n};\n\nconst DISPOSABLE_DOMAINS = [\n  'mailinator.com', 'guerrillamail.com', 'guerrillamail.net', '10minutemail.com', 'tempmail.com',\n  'temp-mail.org', 'yopmail.com', 'trashmail.com', 'getnada.com', 'sharklasers.com', 'dispostable.com',\n  'maildrop.cc', 'throwawaymail.com', 'fakeinbox.com', 'mintemail.com',\n];\n\nconst MIN_FILL_MS = 3000;\nconst URL_RE = /(https?:\\/\\/|www\\.)\\S+/gi;\n\nfunction cleanText(v) {\n  return typeof v === 'string' ? v.replace(/\\u0000/g, '').trim() : '';\n}\n\n/**\n * Returns one of:\n *   { kind: 'spam', reason }\n *   { kind: 'invalid', fields: { field: message } }\n *   { kind: 'ok', lead }\n */\nfunction validateLead(body, nowMs, { zohoEnabled = true } = {}) {\n  if (body === null || typeof body !== 'object' || Array.isArray(body)) {\n    return { kind: 'invalid', fields: { form: 'The request body must be a JSON object.' } };\n  }\n\n  // --- spam guard first: bots get a clear 422, people never see it\n  if (cleanText(body.fax) !== '') return { kind: 'spam', reason: 'A hidden field that only bots fill in was filled in.' };\n  const started = Number(body.started_at);\n  if (!Number.isFinite(started) || started <= 0) {\n    return { kind: 'spam', reason: 'The form timing token is missing. Please reload the page and try again.' };\n  }\n  const elapsed = nowMs - started;\n  if (elapsed < MIN_FILL_MS) {\n    const secs = Math.max(0, elapsed / 1000).toFixed(1);\n    return { kind: 'spam', reason: `The form was sent ${secs} s after the page loaded. People need at least 3 s; that speed looks automated.` };\n  }\n\n  const fields = {};\n  const name = cleanText(body.name).replace(/\\s+/g, ' ');\n  const email = cleanText(body.email).toLowerCase();\n  const company = cleanText(body.company).replace(/\\s+/g, ' ');\n  const website = cleanText(body.website);\n  const message = cleanText(body.message).replace(/\\r\\n/g, '\\n');\n  const pick = (k) => (LEAD_OPTIONS[k].includes(body[k]) ? body[k] : null);\n\n  if (name.length < 2 || name.length > 80) fields.name = 'Please enter your name (2–80 characters).';\n  else if (/[<>]|https?:|www\\./i.test(name)) fields.name = 'Names cannot contain links or angle brackets.';\n\n  if (email.length > 254 || !/^[^\\s@<>,;:\"'()]+@[a-z0-9-]+(\\.[a-z0-9-]+)*\\.[a-z]{2,}$/i.test(email)) {\n    fields.email = 'Please enter a valid email address.';\n  } else if (DISPOSABLE_DOMAINS.includes(email.split('@')[1])) {\n    fields.email = 'Please use an email address you can check; disposable inboxes are blocked.';\n  }\n\n  if (company.length < 1 || company.length > 120) fields.company = 'Please enter your company (1–120 characters).';\n  else if (/[<>]|https?:|www\\./i.test(company)) fields.company = 'Company names cannot contain links or angle brackets.';\n\n  if (website.length > 200) fields.website = 'Website must be at most 200 characters.';\n  else if (website && !/^(https?:\\/\\/)?[a-z0-9-]+(\\.[a-z0-9-]+)+(\\/\\S*)?$/i.test(website)) {\n    fields.website = 'That does not look like a website address (example: example.com).';\n  }\n\n  const service = pick('service');\n  const budget = pick('budget');\n  const timeline = pick('timeline');\n  if (!service) fields.service = 'Please choose a service.';\n  if (!budget) fields.budget = 'Please choose a budget range.';\n  if (!timeline) fields.timeline = 'Please choose a timeline.';\n\n  if (message.length < 20 || message.length > 1500) fields.message = 'Please describe the project in 20–1500 characters.';\n  if (body.consent !== true) fields.consent = 'Please tick the box to agree to the demo terms.';\n\n  const simulate = body.simulate === undefined || body.simulate === null || body.simulate === '' ? 'none' : body.simulate;\n  if (!LEAD_OPTIONS.simulate.includes(simulate)) fields.simulate = 'Unknown simulation option.';\n\n  const crm = body.crm === undefined || body.crm === null || body.crm === '' ? 'hubspot' : body.crm;\n  if (!LEAD_OPTIONS.crm.includes(crm)) fields.crm = 'Unknown CRM option.';\n  else if (crm === 'zoho' && !zohoEnabled) fields.crm = 'Zoho CRM is not connected on this demo yet. Please pick HubSpot.';\n\n  if (Object.keys(fields).length) return { kind: 'invalid', fields };\n\n  const links = (message.match(URL_RE) || []).length;\n  if (links > 2) return { kind: 'spam', reason: `The message contains ${links} links. Lead forms that carry several links are almost always spam.` };\n\n  const parts = name.split(' ');\n  return {\n    kind: 'ok',\n    lead: {\n      name,\n      first_name: parts[0],\n      last_name: parts.slice(1).join(' '),\n      email,\n      company,\n      website,\n      service,\n      budget,\n      timeline,\n      message,\n      simulate,\n      crm,\n      fill_seconds: Math.round(elapsed / 100) / 10,\n    },\n  };\n}\n\n/** a.b@example.com -> a••@example.com */\nfunction maskEmail(email) {\n  const [local, domain] = String(email).split('@');\n  if (!domain) return '';\n  return `${local.slice(0, Math.min(2, local.length))}••@${domain}`;\n}\n\n/** UTC day key, e.g. 2026-11-08 */\nfunction dayKey(ms) {\n  return new Date(ms).toISOString().slice(0, 10);\n}\n\n/**\n * Rate limits, from rows of the leads table that match this email hash or today's day key.\n * rows: [{ email_hash, day, createdAt }]\n */\nfunction checkLimits(rows, { emailHash, nowMs, dailyCap }) {\n  const today = dayKey(nowMs);\n  const mine = rows.filter((r) => r && r.email_hash === emailHash);\n  const recent = mine\n    .map((r) => Date.parse(r.createdAt))\n    .filter((t) => Number.isFinite(t) && nowMs - t < 24 * 3600e3)\n    .sort((a, b) => b - a);\n  const COOLDOWN_MS = 5 * 60e3;\n  if (recent.length && nowMs - recent[0] < COOLDOWN_MS) {\n    return { ok: false, error: 'rate_limited', retry_after_s: Math.ceil((COOLDOWN_MS - (nowMs - recent[0])) / 1000) };\n  }\n  if (recent.length >= 3) {\n    return { ok: false, error: 'rate_limited', retry_after_s: Math.ceil((recent[2] + 24 * 3600e3 - nowMs) / 1000) };\n  }\n  const todayCount = rows.filter((r) => r && r.day === today).length;\n  if (todayCount >= dailyCap) return { ok: false, error: 'daily_cap' };\n  return { ok: true };\n}\n\nconst crypto = require('crypto');\nconst nowMs = Date.now();\nconst r = validateLead($input.first().json.body, nowMs, { zohoEnabled: $env.ZOHO_ENABLED === 'true' });\nif (r.kind !== 'ok') return [{ json: r }];\nconst email_hash = crypto.createHash('sha256').update(r.lead.email).digest('hex');\nreturn [{ json: {\n  kind: 'ok',\n  lead: r.lead,\n  lead_id: crypto.randomUUID(),\n  email_hash,\n  day: dayKey(nowMs),\n  public_base: ($env.PUBLIC_BASE_URL || '').replace(/\\/$/, ''),\n} }];"
       },
       "id": "d07ccc5f-d13e-4bf8-addf-5c6db5c18b16",
       "name": "Validate & spam guard",
@@ -178,7 +178,7 @@
       "parameters": {
         "mode": "runOnceForAllItems",
         "language": "javaScript",
-        "jsCode": "// Pure validation and spam-guard rules for a lead posted by the form.\n// Included into the \"Validate & spam guard\" Code node and unit tested directly.\n\nconst LEAD_OPTIONS = {\n  service: ['New website', 'Website redesign', 'SEO & content', 'Automation & integrations', 'Not sure yet'],\n  budget: ['Under $2k', '$2k–5k', '$5k–15k', '$15k–50k', '$50k+'],\n  timeline: ['As soon as possible', 'Within 1 month', '1–3 months', '3+ months', 'Just exploring'],\n  simulate: ['none', 'crm_outage', 'ai_invalid'],\n};\n\nconst DISPOSABLE_DOMAINS = [\n  'mailinator.com', 'guerrillamail.com', 'guerrillamail.net', '10minutemail.com', 'tempmail.com',\n  'temp-mail.org', 'yopmail.com', 'trashmail.com', 'getnada.com', 'sharklasers.com', 'dispostable.com',\n  'maildrop.cc', 'throwawaymail.com', 'fakeinbox.com', 'mintemail.com',\n];\n\nconst MIN_FILL_MS = 3000;\nconst URL_RE = /(https?:\\/\\/|www\\.)\\S+/gi;\n\nfunction cleanText(v) {\n  return typeof v === 'string' ? v.replace(/\\u0000/g, '').trim() : '';\n}\n\n/**\n * Returns one of:\n *   { kind: 'spam', reason }\n *   { kind: 'invalid', fields: { field: message } }\n *   { kind: 'ok', lead }\n */\nfunction validateLead(body, nowMs) {\n  if (body === null || typeof body !== 'object' || Array.isArray(body)) {\n    return { kind: 'invalid', fields: { form: 'The request body must be a JSON object.' } };\n  }\n\n  // --- spam guard first: bots get a clear 422, people never see it\n  if (cleanText(body.fax) !== '') return { kind: 'spam', reason: 'A hidden field that only bots fill in was filled in.' };\n  const started = Number(body.started_at);\n  if (!Number.isFinite(started) || started <= 0) {\n    return { kind: 'spam', reason: 'The form timing token is missing. Please reload the page and try again.' };\n  }\n  const elapsed = nowMs - started;\n  if (elapsed < MIN_FILL_MS) {\n    const secs = Math.max(0, elapsed / 1000).toFixed(1);\n    return { kind: 'spam', reason: `The form was sent ${secs} s after the page loaded. People need at least 3 s; that speed looks automated.` };\n  }\n\n  const fields = {};\n  const name = cleanText(body.name).replace(/\\s+/g, ' ');\n  const email = cleanText(body.email).toLowerCase();\n  const company = cleanText(body.company).replace(/\\s+/g, ' ');\n  const website = cleanText(body.website);\n  const message = cleanText(body.message).replace(/\\r\\n/g, '\\n');\n  const pick = (k) => (LEAD_OPTIONS[k].includes(body[k]) ? body[k] : null);\n\n  if (name.length < 2 || name.length > 80) fields.name = 'Please enter your name (2–80 characters).';\n  else if (/[<>]|https?:|www\\./i.test(name)) fields.name = 'Names cannot contain links or angle brackets.';\n\n  if (email.length > 254 || !/^[^\\s@<>,;:\"'()]+@[a-z0-9-]+(\\.[a-z0-9-]+)*\\.[a-z]{2,}$/i.test(email)) {\n    fields.email = 'Please enter a valid email address.';\n  } else if (DISPOSABLE_DOMAINS.includes(email.split('@')[1])) {\n    fields.email = 'Please use an email address you can check; disposable inboxes are blocked.';\n  }\n\n  if (company.length < 1 || company.length > 120) fields.company = 'Please enter your company (1–120 characters).';\n  else if (/[<>]|https?:|www\\./i.test(company)) fields.company = 'Company names cannot contain links or angle brackets.';\n\n  if (website.length > 200) fields.website = 'Website must be at most 200 characters.';\n  else if (website && !/^(https?:\\/\\/)?[a-z0-9-]+(\\.[a-z0-9-]+)+(\\/\\S*)?$/i.test(website)) {\n    fields.website = 'That does not look like a website address (example: example.com).';\n  }\n\n  const service = pick('service');\n  const budget = pick('budget');\n  const timeline = pick('timeline');\n  if (!service) fields.service = 'Please choose a service.';\n  if (!budget) fields.budget = 'Please choose a budget range.';\n  if (!timeline) fields.timeline = 'Please choose a timeline.';\n\n  if (message.length < 20 || message.length > 1500) fields.message = 'Please describe the project in 20–1500 characters.';\n  if (body.consent !== true) fields.consent = 'Please tick the box to agree to the demo terms.';\n\n  const simulate = body.simulate === undefined || body.simulate === null || body.simulate === '' ? 'none' : body.simulate;\n  if (!LEAD_OPTIONS.simulate.includes(simulate)) fields.simulate = 'Unknown simulation option.';\n\n  if (Object.keys(fields).length) return { kind: 'invalid', fields };\n\n  const links = (message.match(URL_RE) || []).length;\n  if (links > 2) return { kind: 'spam', reason: `The message contains ${links} links. Lead forms that carry several links are almost always spam.` };\n\n  const parts = name.split(' ');\n  return {\n    kind: 'ok',\n    lead: {\n      name,\n      first_name: parts[0],\n      last_name: parts.slice(1).join(' '),\n      email,\n      company,\n      website,\n      service,\n      budget,\n      timeline,\n      message,\n      simulate,\n      fill_seconds: Math.round(elapsed / 100) / 10,\n    },\n  };\n}\n\n/** a.b@example.com -> a••@example.com */\nfunction maskEmail(email) {\n  const [local, domain] = String(email).split('@');\n  if (!domain) return '';\n  return `${local.slice(0, Math.min(2, local.length))}••@${domain}`;\n}\n\n/** UTC day key, e.g. 2026-11-08 */\nfunction dayKey(ms) {\n  return new Date(ms).toISOString().slice(0, 10);\n}\n\n/**\n * Rate limits, from rows of the leads table that match this email hash or today's day key.\n * rows: [{ email_hash, day, createdAt }]\n */\nfunction checkLimits(rows, { emailHash, nowMs, dailyCap }) {\n  const today = dayKey(nowMs);\n  const mine = rows.filter((r) => r && r.email_hash === emailHash);\n  const recent = mine\n    .map((r) => Date.parse(r.createdAt))\n    .filter((t) => Number.isFinite(t) && nowMs - t < 24 * 3600e3)\n    .sort((a, b) => b - a);\n  const COOLDOWN_MS = 5 * 60e3;\n  if (recent.length && nowMs - recent[0] < COOLDOWN_MS) {\n    return { ok: false, error: 'rate_limited', retry_after_s: Math.ceil((COOLDOWN_MS - (nowMs - recent[0])) / 1000) };\n  }\n  if (recent.length >= 3) {\n    return { ok: false, error: 'rate_limited', retry_after_s: Math.ceil((recent[2] + 24 * 3600e3 - nowMs) / 1000) };\n  }\n  const todayCount = rows.filter((r) => r && r.day === today).length;\n  if (todayCount >= dailyCap) return { ok: false, error: 'daily_cap' };\n  return { ok: true };\n}\n\nconst v = $('Validate & spam guard').first().json;\nconst rows = $input.all().map((i) => i.json).filter((r) => r && r.id !== undefined);\nreturn [{ json: checkLimits(rows, { emailHash: v.email_hash, nowMs: Date.now(), dailyCap: Number($env.DAILY_LEAD_CAP || 150) }) }];"
+        "jsCode": "// Pure validation and spam-guard rules for a lead posted by the form.\n// Included into the \"Validate & spam guard\" Code node and unit tested directly.\n\nconst LEAD_OPTIONS = {\n  service: ['New website', 'Website redesign', 'SEO & content', 'Automation & integrations', 'Not sure yet'],\n  budget: ['Under $2k', '$2k–5k', '$5k–15k', '$15k–50k', '$50k+'],\n  timeline: ['As soon as possible', 'Within 1 month', '1–3 months', '3+ months', 'Just exploring'],\n  simulate: ['none', 'crm_outage', 'ai_invalid'],\n  crm: ['hubspot', 'zoho'],\n};\n\nconst DISPOSABLE_DOMAINS = [\n  'mailinator.com', 'guerrillamail.com', 'guerrillamail.net', '10minutemail.com', 'tempmail.com',\n  'temp-mail.org', 'yopmail.com', 'trashmail.com', 'getnada.com', 'sharklasers.com', 'dispostable.com',\n  'maildrop.cc', 'throwawaymail.com', 'fakeinbox.com', 'mintemail.com',\n];\n\nconst MIN_FILL_MS = 3000;\nconst URL_RE = /(https?:\\/\\/|www\\.)\\S+/gi;\n\nfunction cleanText(v) {\n  return typeof v === 'string' ? v.replace(/\\u0000/g, '').trim() : '';\n}\n\n/**\n * Returns one of:\n *   { kind: 'spam', reason }\n *   { kind: 'invalid', fields: { field: message } }\n *   { kind: 'ok', lead }\n */\nfunction validateLead(body, nowMs, { zohoEnabled = true } = {}) {\n  if (body === null || typeof body !== 'object' || Array.isArray(body)) {\n    return { kind: 'invalid', fields: { form: 'The request body must be a JSON object.' } };\n  }\n\n  // --- spam guard first: bots get a clear 422, people never see it\n  if (cleanText(body.fax) !== '') return { kind: 'spam', reason: 'A hidden field that only bots fill in was filled in.' };\n  const started = Number(body.started_at);\n  if (!Number.isFinite(started) || started <= 0) {\n    return { kind: 'spam', reason: 'The form timing token is missing. Please reload the page and try again.' };\n  }\n  const elapsed = nowMs - started;\n  if (elapsed < MIN_FILL_MS) {\n    const secs = Math.max(0, elapsed / 1000).toFixed(1);\n    return { kind: 'spam', reason: `The form was sent ${secs} s after the page loaded. People need at least 3 s; that speed looks automated.` };\n  }\n\n  const fields = {};\n  const name = cleanText(body.name).replace(/\\s+/g, ' ');\n  const email = cleanText(body.email).toLowerCase();\n  const company = cleanText(body.company).replace(/\\s+/g, ' ');\n  const website = cleanText(body.website);\n  const message = cleanText(body.message).replace(/\\r\\n/g, '\\n');\n  const pick = (k) => (LEAD_OPTIONS[k].includes(body[k]) ? body[k] : null);\n\n  if (name.length < 2 || name.length > 80) fields.name = 'Please enter your name (2–80 characters).';\n  else if (/[<>]|https?:|www\\./i.test(name)) fields.name = 'Names cannot contain links or angle brackets.';\n\n  if (email.length > 254 || !/^[^\\s@<>,;:\"'()]+@[a-z0-9-]+(\\.[a-z0-9-]+)*\\.[a-z]{2,}$/i.test(email)) {\n    fields.email = 'Please enter a valid email address.';\n  } else if (DISPOSABLE_DOMAINS.includes(email.split('@')[1])) {\n    fields.email = 'Please use an email address you can check; disposable inboxes are blocked.';\n  }\n\n  if (company.length < 1 || company.length > 120) fields.company = 'Please enter your company (1–120 characters).';\n  else if (/[<>]|https?:|www\\./i.test(company)) fields.company = 'Company names cannot contain links or angle brackets.';\n\n  if (website.length > 200) fields.website = 'Website must be at most 200 characters.';\n  else if (website && !/^(https?:\\/\\/)?[a-z0-9-]+(\\.[a-z0-9-]+)+(\\/\\S*)?$/i.test(website)) {\n    fields.website = 'That does not look like a website address (example: example.com).';\n  }\n\n  const service = pick('service');\n  const budget = pick('budget');\n  const timeline = pick('timeline');\n  if (!service) fields.service = 'Please choose a service.';\n  if (!budget) fields.budget = 'Please choose a budget range.';\n  if (!timeline) fields.timeline = 'Please choose a timeline.';\n\n  if (message.length < 20 || message.length > 1500) fields.message = 'Please describe the project in 20–1500 characters.';\n  if (body.consent !== true) fields.consent = 'Please tick the box to agree to the demo terms.';\n\n  const simulate = body.simulate === undefined || body.simulate === null || body.simulate === '' ? 'none' : body.simulate;\n  if (!LEAD_OPTIONS.simulate.includes(simulate)) fields.simulate = 'Unknown simulation option.';\n\n  const crm = body.crm === undefined || body.crm === null || body.crm === '' ? 'hubspot' : body.crm;\n  if (!LEAD_OPTIONS.crm.includes(crm)) fields.crm = 'Unknown CRM option.';\n  else if (crm === 'zoho' && !zohoEnabled) fields.crm = 'Zoho CRM is not connected on this demo yet. Please pick HubSpot.';\n\n  if (Object.keys(fields).length) return { kind: 'invalid', fields };\n\n  const links = (message.match(URL_RE) || []).length;\n  if (links > 2) return { kind: 'spam', reason: `The message contains ${links} links. Lead forms that carry several links are almost always spam.` };\n\n  const parts = name.split(' ');\n  return {\n    kind: 'ok',\n    lead: {\n      name,\n      first_name: parts[0],\n      last_name: parts.slice(1).join(' '),\n      email,\n      company,\n      website,\n      service,\n      budget,\n      timeline,\n      message,\n      simulate,\n      crm,\n      fill_seconds: Math.round(elapsed / 100) / 10,\n    },\n  };\n}\n\n/** a.b@example.com -> a••@example.com */\nfunction maskEmail(email) {\n  const [local, domain] = String(email).split('@');\n  if (!domain) return '';\n  return `${local.slice(0, Math.min(2, local.length))}••@${domain}`;\n}\n\n/** UTC day key, e.g. 2026-11-08 */\nfunction dayKey(ms) {\n  return new Date(ms).toISOString().slice(0, 10);\n}\n\n/**\n * Rate limits, from rows of the leads table that match this email hash or today's day key.\n * rows: [{ email_hash, day, createdAt }]\n */\nfunction checkLimits(rows, { emailHash, nowMs, dailyCap }) {\n  const today = dayKey(nowMs);\n  const mine = rows.filter((r) => r && r.email_hash === emailHash);\n  const recent = mine\n    .map((r) => Date.parse(r.createdAt))\n    .filter((t) => Number.isFinite(t) && nowMs - t < 24 * 3600e3)\n    .sort((a, b) => b - a);\n  const COOLDOWN_MS = 5 * 60e3;\n  if (recent.length && nowMs - recent[0] < COOLDOWN_MS) {\n    return { ok: false, error: 'rate_limited', retry_after_s: Math.ceil((COOLDOWN_MS - (nowMs - recent[0])) / 1000) };\n  }\n  if (recent.length >= 3) {\n    return { ok: false, error: 'rate_limited', retry_after_s: Math.ceil((recent[2] + 24 * 3600e3 - nowMs) / 1000) };\n  }\n  const todayCount = rows.filter((r) => r && r.day === today).length;\n  if (todayCount >= dailyCap) return { ok: false, error: 'daily_cap' };\n  return { ok: true };\n}\n\nconst v = $('Validate & spam guard').first().json;\nconst rows = $input.all().map((i) => i.json).filter((r) => r && r.id !== undefined);\nreturn [{ json: checkLimits(rows, { emailHash: v.email_hash, nowMs: Date.now(), dailyCap: Number($env.DAILY_LEAD_CAP || 150) }) }];"
       },
       "id": "68ef6a39-c0d6-4ad9-a24e-ed42b1a6a04b",
       "name": "Check limits",
@@ -256,7 +256,8 @@
             "lead_id": "={{ $('Validate & spam guard').first().json.lead_id }}",
             "email_hash": "={{ $('Validate & spam guard').first().json.email_hash }}",
             "day": "={{ $('Validate & spam guard').first().json.day }}",
-            "simulate": "={{ $('Validate & spam guard').first().json.lead.simulate }}"
+            "simulate": "={{ $('Validate & spam guard').first().json.lead.simulate }}",
+            "crm": "={{ $('Validate & spam guard').first().json.lead.crm }}"
           },
           "matchingColumns": [],
           "schema": [
@@ -295,6 +296,15 @@
               "display": true,
               "type": "string",
               "canBeUsedToMatch": true
+            },
+            {
+              "id": "crm",
+              "displayName": "crm",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
             }
           ]
         },
@@ -314,7 +324,7 @@
       "parameters": {
         "mode": "runOnceForAllItems",
         "language": "javaScript",
-        "jsCode": "function event(lead_id, step, state, summary, detail) {\n  return { json: { lead_id, step, state, summary: String(summary).slice(0, 300), detail: detail === undefined ? '' : JSON.stringify(detail) } };\n}\nfunction errorText(e) {\n  if (!e) return 'unknown error';\n  if (typeof e === 'string') return e.slice(0, 200);\n  const parts = [e.message, e.description].filter(Boolean).map(String);\n  return (parts.join(': ') || JSON.stringify(e)).replace(/\\s+/g, ' ').slice(0, 200);\n}\nconst v = $('Validate & spam guard').first().json;\nconst l = v.lead;\nconst masked = l.email.split('@')[0].slice(0, 2) + '••@' + l.email.split('@')[1];\nreturn [\n  event(v.lead_id, 'received', 'ok', 'Your form reached the n8n webhook.', { first_name: l.first_name, company: l.company, email_masked: masked, simulate: l.simulate }),\n  event(v.lead_id, 'validated', 'ok', 'Passed field checks, honeypot, timing (' + l.fill_seconds + ' s to fill), link count and rate limits.', { fill_seconds: l.fill_seconds, service: l.service, budget: l.budget, timeline: l.timeline }),\n];"
+        "jsCode": "function event(lead_id, step, state, summary, detail) {\n  return { json: { lead_id, step, state, summary: String(summary).slice(0, 300), detail: detail === undefined ? '' : JSON.stringify(detail) } };\n}\nfunction errorText(e) {\n  if (!e) return 'unknown error';\n  if (typeof e === 'string') return e.slice(0, 200);\n  const parts = [e.message, e.description].filter(Boolean).map(String);\n  return (parts.join(': ') || JSON.stringify(e)).replace(/\\s+/g, ' ').slice(0, 200);\n}\nconst v = $('Validate & spam guard').first().json;\nconst l = v.lead;\nconst masked = l.email.split('@')[0].slice(0, 2) + '••@' + l.email.split('@')[1];\nreturn [\n  event(v.lead_id, 'received', 'ok', 'Your form reached the n8n webhook.', { first_name: l.first_name, company: l.company, email_masked: masked, simulate: l.simulate, crm: l.crm }),\n  event(v.lead_id, 'validated', 'ok', 'Passed field checks, honeypot, timing (' + l.fill_seconds + ' s to fill), link count and rate limits.', { fill_seconds: l.fill_seconds, service: l.service, budget: l.budget, timeline: l.timeline }),\n];"
       },
       "id": "93695bed-0fc5-431a-ad78-d67498ce522d",
       "name": "Event: received",
@@ -549,7 +559,7 @@
       "parameters": {
         "mode": "runOnceForAllItems",
         "language": "javaScript",
-        "jsCode": "// HubSpot payloads and the two emails. Every user value is escaped before it goes into HTML.\n\nfunction escapeHtml(s) {\n  return String(s ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n}\n\nfunction oneLine(s, max) {\n  return String(s ?? '').replace(/[\\r\\n\\t]+/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, max);\n}\n\nfunction websiteUrl(w) {\n  if (!w) return '';\n  return /^https?:\\/\\//i.test(w) ? w : `https://${w}`;\n}\n\nfunction hubspotContactUpsert(lead) {\n  const properties = {\n    email: lead.email,\n    firstname: lead.first_name,\n    lastname: lead.last_name || '',\n    company: lead.company,\n    lifecyclestage: 'lead',\n    hs_lead_status: 'NEW',\n  };\n  if (lead.website) properties.website = websiteUrl(lead.website);\n  return { inputs: [{ idProperty: 'email', id: lead.email, properties }] };\n}\n\nconst NEXT_STEP_TEXT = {\n  book_call: 'Book a discovery call',\n  send_proposal_questions: 'Send scoping questions',\n  nurture: 'Add to nurture, check back later',\n  decline_politely: 'Decline politely',\n};\n\nfunction hubspotNote(lead, q, { contactId, leadId, nowMs }) {\n  const flags = q.red_flags.length ? q.red_flags.map((f) => `<li>${escapeHtml(f)}</li>`).join('') : '<li>none</li>';\n  const body = [\n    `<p><strong>Lead score ${q.score}/100 (${escapeHtml(q.tier)})</strong>, scored by ${q.scored_by === 'ai' ? 'Google Gemini' : 'the rules fallback'}.</p>`,\n    `<p>${escapeHtml(q.reason)}</p>`,\n    `<p><strong>Suggested next step:</strong> ${escapeHtml(NEXT_STEP_TEXT[q.next_step] || q.next_step)}</p>`,\n    `<p><strong>Red flags:</strong></p><ul>${flags}</ul>`,\n    `<p><strong>Service:</strong> ${escapeHtml(lead.service)}<br><strong>Budget:</strong> ${escapeHtml(lead.budget)}<br><strong>Timeline:</strong> ${escapeHtml(lead.timeline)}</p>`,\n    `<p><strong>Message:</strong><br>${escapeHtml(lead.message).replace(/\\n/g, '<br>')}</p>`,\n    `<p>Source: n8n lead pipeline demo. Lead id ${escapeHtml(leadId)}.</p>`,\n  ].join('');\n  return {\n    properties: { hs_timestamp: new Date(nowMs).toISOString(), hs_note_body: body },\n    associations: [{ to: { id: String(contactId) }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 202 }] }],\n  };\n}\n\nconst REPLY_BY_TIER = {\n  hot: 'Your project looks like a strong fit. Someone from the team will email you within one business day to set up a 30-minute discovery call.',\n  warm: 'Thanks for the details. We will send you a few short scoping questions within two business days so we can come back with a clear estimate.',\n  cold: 'Thanks for thinking of us. Based on what you shared we may not be the right fit right now, but we have saved your note and will be in touch if that changes.',\n};\n\nconst DEMO_FOOTER_TEXT =\n  'This is a live demo. Fernbrook Studio is a fictional business; this reply was sent by an n8n workflow built by Kabiir Labs (kabiirlabs.com) because this address was entered in the demo form at n8n.kabiirlabs.com. No further emails will be sent.';\n\nfunction leadReplyEmail(lead, q, { from, statusUrl, leadId }) {\n  const first = oneLine(lead.first_name, 40);\n  const subject = oneLine(`Thanks ${first}, we got your project details`, 120);\n  const lines = [\n    `Hi ${first},`,\n    '',\n    `Thanks for telling us about ${oneLine(lead.company, 120)}'s ${lead.service.toLowerCase()} project.`,\n    '',\n    REPLY_BY_TIER[q.tier],\n    '',\n    `You can see exactly what happened to your enquiry here: ${statusUrl}`,\n    '',\n    'Fernbrook Studio (demo)',\n    '',\n    '--',\n    DEMO_FOOTER_TEXT,\n  ];\n  const html = [\n    '<div style=\"font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.55;color:#1f2933;max-width:560px\">',\n    `<p>Hi ${escapeHtml(first)},</p>`,\n    `<p>Thanks for telling us about ${escapeHtml(lead.company)}'s ${escapeHtml(lead.service.toLowerCase())} project.</p>`,\n    `<p>${escapeHtml(REPLY_BY_TIER[q.tier])}</p>`,\n    `<p><a href=\"${escapeHtml(statusUrl)}\" style=\"color:#2f6f4f\">See what happened to your enquiry, step by step</a></p>`,\n    '<p>Fernbrook Studio (demo)</p>',\n    `<hr style=\"border:none;border-top:1px solid #e3e7eb;margin:24px 0\"><p style=\"font-size:12px;color:#6b7785\">${escapeHtml(DEMO_FOOTER_TEXT)}</p>`,\n    '</div>',\n  ].join('');\n  return { from, to: [lead.email], subject, text: lines.join('\\n'), html, headers: { 'X-Entity-Ref-ID': leadId } };\n}\n\nfunction teamAlertEmail(lead, q, { from, to, statusUrl, crm, problems }) {\n  const urgent = problems.length > 0;\n  const subject = oneLine(\n    urgent\n      ? `[ACTION NEEDED] Lead from ${lead.company}: ${problems.join('; ')}`\n      : `[${q.tier.toUpperCase()} ${q.score}] New lead: ${lead.company}`,\n    150,\n  );\n  const crmLine = crm.contactUrl\n    ? `HubSpot contact: ${crm.contactUrl}`\n    : 'HubSpot: NOT SAVED. The details below are the only copy; add them by hand.';\n  const text = [\n    urgent ? `Something failed for this lead: ${problems.join('; ')}. The lead still got the reply email unless listed above.` : 'New lead qualified by the pipeline.',\n    '',\n    `Score: ${q.score}/100 (${q.tier}), by ${q.scored_by === 'ai' ? 'Gemini' : 'rules fallback'}${q.fallback_reason ? ` (${q.fallback_reason})` : ''}`,\n    `Why: ${q.reason}`,\n    `Next step: ${NEXT_STEP_TEXT[q.next_step] || q.next_step}`,\n    `Red flags: ${q.red_flags.length ? q.red_flags.join(', ') : 'none'}`,\n    '',\n    `Name: ${lead.name}`,\n    `Email: ${lead.email}`,\n    `Company: ${lead.company}`,\n    `Website: ${lead.website || '-'}`,\n    `Service: ${lead.service} | Budget: ${lead.budget} | Timeline: ${lead.timeline}`,\n    '',\n    'Message:',\n    lead.message,\n    '',\n    crmLine,\n    `Pipeline status: ${statusUrl}`,\n  ].join('\\n');\n  return { from, to: [to], subject, text };\n}\n\nconst v = $('Validate & spam guard').first().json;\nconst outage = v.lead.simulate === 'crm_outage';\nconst url = outage\n  ? ($env.SIM_OUTAGE_URL || 'http://127.0.0.1:5678/webhook/sim-crm-outage') + '?lead_id=' + encodeURIComponent(v.lead_id)\n  : ($env.HUBSPOT_BASE || 'https://api.hubapi.com') + '/crm/v3/objects/contacts/batch/upsert';\nreturn [{ json: { url, body: hubspotContactUpsert(v.lead) } }];"
+        "jsCode": "// HubSpot payloads and the two emails. Every user value is escaped before it goes into HTML.\n\nfunction escapeHtml(s) {\n  return String(s ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n}\n\nfunction oneLine(s, max) {\n  return String(s ?? '').replace(/[\\r\\n\\t]+/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, max);\n}\n\nfunction websiteUrl(w) {\n  if (!w) return '';\n  return /^https?:\\/\\//i.test(w) ? w : `https://${w}`;\n}\n\nfunction hubspotContactUpsert(lead) {\n  const properties = {\n    email: lead.email,\n    firstname: lead.first_name,\n    lastname: lead.last_name || '',\n    company: lead.company,\n    lifecyclestage: 'lead',\n    hs_lead_status: 'NEW',\n  };\n  if (lead.website) properties.website = websiteUrl(lead.website);\n  return { inputs: [{ idProperty: 'email', id: lead.email, properties }] };\n}\n\nconst CRM_NAMES = { hubspot: 'HubSpot', zoho: 'Zoho CRM' };\n\nfunction zohoLeadUpsert(lead, q) {\n  const record = {\n    Last_Name: lead.last_name || lead.first_name,\n    First_Name: lead.last_name ? lead.first_name : '',\n    Email: lead.email,\n    Company: lead.company,\n    Lead_Status: 'Not Contacted',\n    Description: oneLine(`Score ${q.score}/100 (${q.tier}). ${q.reason}`, 1000),\n  };\n  if (lead.website) record.Website = websiteUrl(lead.website);\n  return { data: [record], duplicate_check_fields: ['Email'], trigger: [] };\n}\n\nfunction plainNoteText(lead, q, leadId) {\n  return [\n    `Lead score ${q.score}/100 (${q.tier}), scored by ${q.scored_by === 'ai' ? 'Google Gemini' : 'the rules fallback'}.`,\n    q.reason,\n    `Suggested next step: ${NEXT_STEP_TEXT[q.next_step] || q.next_step}`,\n    `Red flags: ${q.red_flags.length ? q.red_flags.join(', ') : 'none'}`,\n    `Service: ${lead.service} | Budget: ${lead.budget} | Timeline: ${lead.timeline}`,\n    '',\n    'Message:',\n    lead.message,\n    '',\n    `Source: n8n lead pipeline demo. Lead id ${leadId}.`,\n  ].join('\\n');\n}\n\nfunction zohoNote(lead, q, { leadId }) {\n  return { data: [{ Note_Title: oneLine(`Lead score ${q.score}/100 (${q.tier})`, 120), Note_Content: plainNoteText(lead, q, leadId) }] };\n}\n\nconst NEXT_STEP_TEXT = {\n  book_call: 'Book a discovery call',\n  send_proposal_questions: 'Send scoping questions',\n  nurture: 'Add to nurture, check back later',\n  decline_politely: 'Decline politely',\n};\n\nfunction hubspotNote(lead, q, { contactId, leadId, nowMs }) {\n  const flags = q.red_flags.length ? q.red_flags.map((f) => `<li>${escapeHtml(f)}</li>`).join('') : '<li>none</li>';\n  const body = [\n    `<p><strong>Lead score ${q.score}/100 (${escapeHtml(q.tier)})</strong>, scored by ${q.scored_by === 'ai' ? 'Google Gemini' : 'the rules fallback'}.</p>`,\n    `<p>${escapeHtml(q.reason)}</p>`,\n    `<p><strong>Suggested next step:</strong> ${escapeHtml(NEXT_STEP_TEXT[q.next_step] || q.next_step)}</p>`,\n    `<p><strong>Red flags:</strong></p><ul>${flags}</ul>`,\n    `<p><strong>Service:</strong> ${escapeHtml(lead.service)}<br><strong>Budget:</strong> ${escapeHtml(lead.budget)}<br><strong>Timeline:</strong> ${escapeHtml(lead.timeline)}</p>`,\n    `<p><strong>Message:</strong><br>${escapeHtml(lead.message).replace(/\\n/g, '<br>')}</p>`,\n    `<p>Source: n8n lead pipeline demo. Lead id ${escapeHtml(leadId)}.</p>`,\n  ].join('');\n  return {\n    properties: { hs_timestamp: new Date(nowMs).toISOString(), hs_note_body: body },\n    associations: [{ to: { id: String(contactId) }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 202 }] }],\n  };\n}\n\nconst REPLY_BY_TIER = {\n  hot: 'Your project looks like a strong fit. Someone from the team will email you within one business day to set up a 30-minute discovery call.',\n  warm: 'Thanks for the details. We will send you a few short scoping questions within two business days so we can come back with a clear estimate.',\n  cold: 'Thanks for thinking of us. Based on what you shared we may not be the right fit right now, but we have saved your note and will be in touch if that changes.',\n};\n\nconst DEMO_FOOTER_TEXT =\n  'This is a live demo. Fernbrook Studio is a fictional business; this reply was sent by an n8n workflow built by Kabiir Labs (kabiirlabs.com) because this address was entered in the demo form at n8n.kabiirlabs.com. No further emails will be sent.';\n\nfunction leadReplyEmail(lead, q, { from, statusUrl, leadId }) {\n  const first = oneLine(lead.first_name, 40);\n  const subject = oneLine(`Thanks ${first}, we got your project details`, 120);\n  const lines = [\n    `Hi ${first},`,\n    '',\n    `Thanks for telling us about ${oneLine(lead.company, 120)}'s ${lead.service.toLowerCase()} project.`,\n    '',\n    REPLY_BY_TIER[q.tier],\n    '',\n    `You can see exactly what happened to your enquiry here: ${statusUrl}`,\n    '',\n    'Fernbrook Studio (demo)',\n    '',\n    '--',\n    DEMO_FOOTER_TEXT,\n  ];\n  const html = [\n    '<div style=\"font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.55;color:#1f2933;max-width:560px\">',\n    `<p>Hi ${escapeHtml(first)},</p>`,\n    `<p>Thanks for telling us about ${escapeHtml(lead.company)}'s ${escapeHtml(lead.service.toLowerCase())} project.</p>`,\n    `<p>${escapeHtml(REPLY_BY_TIER[q.tier])}</p>`,\n    `<p><a href=\"${escapeHtml(statusUrl)}\" style=\"color:#2f6f4f\">See what happened to your enquiry, step by step</a></p>`,\n    '<p>Fernbrook Studio (demo)</p>',\n    `<hr style=\"border:none;border-top:1px solid #e3e7eb;margin:24px 0\"><p style=\"font-size:12px;color:#6b7785\">${escapeHtml(DEMO_FOOTER_TEXT)}</p>`,\n    '</div>',\n  ].join('');\n  return { from, to: [lead.email], subject, text: lines.join('\\n'), html, headers: { 'X-Entity-Ref-ID': leadId } };\n}\n\nfunction teamAlertEmail(lead, q, { from, to, statusUrl, crm, problems }) {\n  const urgent = problems.length > 0;\n  const subject = oneLine(\n    urgent\n      ? `[ACTION NEEDED] Lead from ${lead.company}: ${problems.join('; ')}`\n      : `[${q.tier.toUpperCase()} ${q.score}] New lead: ${lead.company}`,\n    150,\n  );\n  const crmName = CRM_NAMES[crm.name] || 'CRM';\n  const crmLine = crm.saved\n    ? `${crmName} record: ${crm.contactUrl || '(saved; open the CRM to see it)'}`\n    : `${crmName}: NOT SAVED. The details below are the only copy; add them by hand.`;\n  const text = [\n    urgent ? `Something failed for this lead: ${problems.join('; ')}. The lead still got the reply email unless listed above.` : 'New lead qualified by the pipeline.',\n    '',\n    `Score: ${q.score}/100 (${q.tier}), by ${q.scored_by === 'ai' ? 'Gemini' : 'rules fallback'}${q.fallback_reason ? ` (${q.fallback_reason})` : ''}`,\n    `Why: ${q.reason}`,\n    `Next step: ${NEXT_STEP_TEXT[q.next_step] || q.next_step}`,\n    `Red flags: ${q.red_flags.length ? q.red_flags.join(', ') : 'none'}`,\n    '',\n    `Name: ${lead.name}`,\n    `Email: ${lead.email}`,\n    `Company: ${lead.company}`,\n    `Website: ${lead.website || '-'}`,\n    `Service: ${lead.service} | Budget: ${lead.budget} | Timeline: ${lead.timeline}`,\n    '',\n    'Message:',\n    lead.message,\n    '',\n    crmLine,\n    `Pipeline status: ${statusUrl}`,\n  ].join('\\n');\n  return { from, to: [to], subject, text };\n}\n\nconst v = $('Validate & spam guard').first().json;\nconst q = JSON.parse($('Check AI answer').first().json.detail);\nconst outage = v.lead.simulate === 'crm_outage';\nconst sim = ($env.SIM_OUTAGE_URL || 'http://127.0.0.1:5678/webhook/sim-crm-outage') + '?lead_id=' + encodeURIComponent(v.lead_id);\nif (v.lead.crm === 'zoho') {\n  const url = outage ? sim : ($env.ZOHO_API_BASE || 'https://www.zohoapis.com') + '/crm/v8/Leads/upsert';\n  return [{ json: { crm: 'zoho', url, body: zohoLeadUpsert(v.lead, q) } }];\n}\nconst url = outage ? sim : ($env.HUBSPOT_BASE || 'https://api.hubapi.com') + '/crm/v3/objects/contacts/batch/upsert';\nreturn [{ json: { crm: 'hubspot', url, body: hubspotContactUpsert(v.lead) } }];"
       },
       "id": "afb7aef5-5bf8-468a-a654-89ab72d62681",
       "name": "Prepare contact",
@@ -557,6 +567,40 @@
       "typeVersion": 2,
       "position": [
         4000,
+        680
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a7a686e2-ab5a-4684-abb4-976221810bd5",
+              "leftValue": "={{ $json.crm === 'zoho' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "17b072df-1a94-443d-aaba-c461ab158faf",
+      "name": "Zoho CRM?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        4250,
         680
       ]
     },
@@ -579,8 +623,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
       "position": [
-        4250,
-        680
+        4500,
+        850
       ],
       "retryOnFail": true,
       "maxTries": 3,
@@ -596,16 +640,50 @@
     },
     {
       "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}",
+        "options": {
+          "timeout": 15000
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth2Api"
+      },
+      "id": "cebd8725-bf61-4dbf-a547-1b70b839f5f0",
+      "name": "Zoho: upsert lead",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        4500,
+        510
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "oAuth2Api": {
+          "id": "__CRED_ZOHO__",
+          "name": "Zoho CRM (self client)"
+        }
+      },
+      "notes": "Upsert by email. OAuth2 (Zoho self client): n8n renews the access token on a 401."
+    },
+    {
+      "parameters": {
         "mode": "runOnceForAllItems",
         "language": "javaScript",
-        "jsCode": "function event(lead_id, step, state, summary, detail) {\n  return { json: { lead_id, step, state, summary: String(summary).slice(0, 300), detail: detail === undefined ? '' : JSON.stringify(detail) } };\n}\nfunction errorText(e) {\n  if (!e) return 'unknown error';\n  if (typeof e === 'string') return e.slice(0, 200);\n  const parts = [e.message, e.description].filter(Boolean).map(String);\n  return (parts.join(': ') || JSON.stringify(e)).replace(/\\s+/g, ' ').slice(0, 200);\n}\nconst v = $('Validate & spam guard').first().json;\nconst res = $input.first().json;\nif (res.error) {\n  return [event(v.lead_id, 'crm_contact', 'failed', 'HubSpot did not accept the contact after 3 attempts: ' + errorText(res.error), { attempts: 3, error: errorText(res.error) })];\n}\nconst r = Array.isArray(res.results) ? res.results[0] : null;\nif (!r || !r.id) return [event(v.lead_id, 'crm_contact', 'failed', 'HubSpot answered without a contact id.', { error: 'unexpected response' })];\nreturn [event(v.lead_id, 'crm_contact', 'ok', (r.new === false ? 'Existing contact updated' : 'New contact created') + ' in HubSpot (id ' + r.id + ').', { contact_id: String(r.id), created: r.new !== false, lifecycle_stage: 'lead', lead_status: 'NEW' })];"
+        "jsCode": "function event(lead_id, step, state, summary, detail) {\n  return { json: { lead_id, step, state, summary: String(summary).slice(0, 300), detail: detail === undefined ? '' : JSON.stringify(detail) } };\n}\nfunction errorText(e) {\n  if (!e) return 'unknown error';\n  if (typeof e === 'string') return e.slice(0, 200);\n  const parts = [e.message, e.description].filter(Boolean).map(String);\n  return (parts.join(': ') || JSON.stringify(e)).replace(/\\s+/g, ' ').slice(0, 200);\n}\nconst v = $('Validate & spam guard').first().json;\nconst crm = $('Prepare contact').first().json.crm;\nconst name = crm === 'zoho' ? 'Zoho CRM' : 'HubSpot';\nconst what = crm === 'zoho' ? 'lead' : 'contact';\nconst res = $input.first().json;\nif (res.error) {\n  return [event(v.lead_id, 'crm_contact', 'failed', name + ' did not accept the ' + what + ' after 3 attempts: ' + errorText(res.error), { crm, attempts: 3, error: errorText(res.error) })];\n}\nif (crm === 'zoho') {\n  const r = Array.isArray(res.data) ? res.data[0] : null;\n  if (!r || r.status !== 'success' || !r.details || !r.details.id) {\n    return [event(v.lead_id, 'crm_contact', 'failed', 'Zoho CRM refused the lead: ' + errorText(r ? (r.code + ' ' + (r.message || '')) : 'no data in response'), { crm, error: r ? r.code : 'unexpected response' })];\n  }\n  const created = r.action !== 'update';\n  return [event(v.lead_id, 'crm_contact', 'ok', (created ? 'New lead created' : 'Existing lead updated') + ' in Zoho CRM (id ' + r.details.id + ').', { crm, contact_id: String(r.details.id), created, module: 'Leads', lead_status: 'Not Contacted' })];\n}\nconst r = Array.isArray(res.results) ? res.results[0] : null;\nif (!r || !r.id) return [event(v.lead_id, 'crm_contact', 'failed', 'HubSpot answered without a contact id.', { crm, error: 'unexpected response' })];\nreturn [event(v.lead_id, 'crm_contact', 'ok', (r.new === false ? 'Existing contact updated' : 'New contact created') + ' in HubSpot (id ' + r.id + ').', { crm, contact_id: String(r.id), created: r.new !== false, lifecycle_stage: 'lead', lead_status: 'NEW' })];"
       },
       "id": "ae204577-088c-4655-ab75-fea594f53c2b",
       "name": "Record contact",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        4500,
+        4750,
         680
       ]
     },
@@ -631,7 +709,7 @@
       "type": "n8n-nodes-base.dataTable",
       "typeVersion": 1.1,
       "position": [
-        4750,
+        5000,
         680
       ]
     },
@@ -665,7 +743,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        5000,
+        5250,
         680
       ]
     },
@@ -673,21 +751,55 @@
       "parameters": {
         "mode": "runOnceForAllItems",
         "language": "javaScript",
-        "jsCode": "// HubSpot payloads and the two emails. Every user value is escaped before it goes into HTML.\n\nfunction escapeHtml(s) {\n  return String(s ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n}\n\nfunction oneLine(s, max) {\n  return String(s ?? '').replace(/[\\r\\n\\t]+/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, max);\n}\n\nfunction websiteUrl(w) {\n  if (!w) return '';\n  return /^https?:\\/\\//i.test(w) ? w : `https://${w}`;\n}\n\nfunction hubspotContactUpsert(lead) {\n  const properties = {\n    email: lead.email,\n    firstname: lead.first_name,\n    lastname: lead.last_name || '',\n    company: lead.company,\n    lifecyclestage: 'lead',\n    hs_lead_status: 'NEW',\n  };\n  if (lead.website) properties.website = websiteUrl(lead.website);\n  return { inputs: [{ idProperty: 'email', id: lead.email, properties }] };\n}\n\nconst NEXT_STEP_TEXT = {\n  book_call: 'Book a discovery call',\n  send_proposal_questions: 'Send scoping questions',\n  nurture: 'Add to nurture, check back later',\n  decline_politely: 'Decline politely',\n};\n\nfunction hubspotNote(lead, q, { contactId, leadId, nowMs }) {\n  const flags = q.red_flags.length ? q.red_flags.map((f) => `<li>${escapeHtml(f)}</li>`).join('') : '<li>none</li>';\n  const body = [\n    `<p><strong>Lead score ${q.score}/100 (${escapeHtml(q.tier)})</strong>, scored by ${q.scored_by === 'ai' ? 'Google Gemini' : 'the rules fallback'}.</p>`,\n    `<p>${escapeHtml(q.reason)}</p>`,\n    `<p><strong>Suggested next step:</strong> ${escapeHtml(NEXT_STEP_TEXT[q.next_step] || q.next_step)}</p>`,\n    `<p><strong>Red flags:</strong></p><ul>${flags}</ul>`,\n    `<p><strong>Service:</strong> ${escapeHtml(lead.service)}<br><strong>Budget:</strong> ${escapeHtml(lead.budget)}<br><strong>Timeline:</strong> ${escapeHtml(lead.timeline)}</p>`,\n    `<p><strong>Message:</strong><br>${escapeHtml(lead.message).replace(/\\n/g, '<br>')}</p>`,\n    `<p>Source: n8n lead pipeline demo. Lead id ${escapeHtml(leadId)}.</p>`,\n  ].join('');\n  return {\n    properties: { hs_timestamp: new Date(nowMs).toISOString(), hs_note_body: body },\n    associations: [{ to: { id: String(contactId) }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 202 }] }],\n  };\n}\n\nconst REPLY_BY_TIER = {\n  hot: 'Your project looks like a strong fit. Someone from the team will email you within one business day to set up a 30-minute discovery call.',\n  warm: 'Thanks for the details. We will send you a few short scoping questions within two business days so we can come back with a clear estimate.',\n  cold: 'Thanks for thinking of us. Based on what you shared we may not be the right fit right now, but we have saved your note and will be in touch if that changes.',\n};\n\nconst DEMO_FOOTER_TEXT =\n  'This is a live demo. Fernbrook Studio is a fictional business; this reply was sent by an n8n workflow built by Kabiir Labs (kabiirlabs.com) because this address was entered in the demo form at n8n.kabiirlabs.com. No further emails will be sent.';\n\nfunction leadReplyEmail(lead, q, { from, statusUrl, leadId }) {\n  const first = oneLine(lead.first_name, 40);\n  const subject = oneLine(`Thanks ${first}, we got your project details`, 120);\n  const lines = [\n    `Hi ${first},`,\n    '',\n    `Thanks for telling us about ${oneLine(lead.company, 120)}'s ${lead.service.toLowerCase()} project.`,\n    '',\n    REPLY_BY_TIER[q.tier],\n    '',\n    `You can see exactly what happened to your enquiry here: ${statusUrl}`,\n    '',\n    'Fernbrook Studio (demo)',\n    '',\n    '--',\n    DEMO_FOOTER_TEXT,\n  ];\n  const html = [\n    '<div style=\"font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.55;color:#1f2933;max-width:560px\">',\n    `<p>Hi ${escapeHtml(first)},</p>`,\n    `<p>Thanks for telling us about ${escapeHtml(lead.company)}'s ${escapeHtml(lead.service.toLowerCase())} project.</p>`,\n    `<p>${escapeHtml(REPLY_BY_TIER[q.tier])}</p>`,\n    `<p><a href=\"${escapeHtml(statusUrl)}\" style=\"color:#2f6f4f\">See what happened to your enquiry, step by step</a></p>`,\n    '<p>Fernbrook Studio (demo)</p>',\n    `<hr style=\"border:none;border-top:1px solid #e3e7eb;margin:24px 0\"><p style=\"font-size:12px;color:#6b7785\">${escapeHtml(DEMO_FOOTER_TEXT)}</p>`,\n    '</div>',\n  ].join('');\n  return { from, to: [lead.email], subject, text: lines.join('\\n'), html, headers: { 'X-Entity-Ref-ID': leadId } };\n}\n\nfunction teamAlertEmail(lead, q, { from, to, statusUrl, crm, problems }) {\n  const urgent = problems.length > 0;\n  const subject = oneLine(\n    urgent\n      ? `[ACTION NEEDED] Lead from ${lead.company}: ${problems.join('; ')}`\n      : `[${q.tier.toUpperCase()} ${q.score}] New lead: ${lead.company}`,\n    150,\n  );\n  const crmLine = crm.contactUrl\n    ? `HubSpot contact: ${crm.contactUrl}`\n    : 'HubSpot: NOT SAVED. The details below are the only copy; add them by hand.';\n  const text = [\n    urgent ? `Something failed for this lead: ${problems.join('; ')}. The lead still got the reply email unless listed above.` : 'New lead qualified by the pipeline.',\n    '',\n    `Score: ${q.score}/100 (${q.tier}), by ${q.scored_by === 'ai' ? 'Gemini' : 'rules fallback'}${q.fallback_reason ? ` (${q.fallback_reason})` : ''}`,\n    `Why: ${q.reason}`,\n    `Next step: ${NEXT_STEP_TEXT[q.next_step] || q.next_step}`,\n    `Red flags: ${q.red_flags.length ? q.red_flags.join(', ') : 'none'}`,\n    '',\n    `Name: ${lead.name}`,\n    `Email: ${lead.email}`,\n    `Company: ${lead.company}`,\n    `Website: ${lead.website || '-'}`,\n    `Service: ${lead.service} | Budget: ${lead.budget} | Timeline: ${lead.timeline}`,\n    '',\n    'Message:',\n    lead.message,\n    '',\n    crmLine,\n    `Pipeline status: ${statusUrl}`,\n  ].join('\\n');\n  return { from, to: [to], subject, text };\n}\n\nconst v = $('Validate & spam guard').first().json;\nconst q = JSON.parse($('Check AI answer').first().json.detail);\nconst contactId = JSON.parse($('Record contact').first().json.detail).contact_id;\nreturn [{ json: { body: hubspotNote(v.lead, q, { contactId, leadId: v.lead_id, nowMs: Date.now() }) } }];"
+        "jsCode": "// HubSpot payloads and the two emails. Every user value is escaped before it goes into HTML.\n\nfunction escapeHtml(s) {\n  return String(s ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n}\n\nfunction oneLine(s, max) {\n  return String(s ?? '').replace(/[\\r\\n\\t]+/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, max);\n}\n\nfunction websiteUrl(w) {\n  if (!w) return '';\n  return /^https?:\\/\\//i.test(w) ? w : `https://${w}`;\n}\n\nfunction hubspotContactUpsert(lead) {\n  const properties = {\n    email: lead.email,\n    firstname: lead.first_name,\n    lastname: lead.last_name || '',\n    company: lead.company,\n    lifecyclestage: 'lead',\n    hs_lead_status: 'NEW',\n  };\n  if (lead.website) properties.website = websiteUrl(lead.website);\n  return { inputs: [{ idProperty: 'email', id: lead.email, properties }] };\n}\n\nconst CRM_NAMES = { hubspot: 'HubSpot', zoho: 'Zoho CRM' };\n\nfunction zohoLeadUpsert(lead, q) {\n  const record = {\n    Last_Name: lead.last_name || lead.first_name,\n    First_Name: lead.last_name ? lead.first_name : '',\n    Email: lead.email,\n    Company: lead.company,\n    Lead_Status: 'Not Contacted',\n    Description: oneLine(`Score ${q.score}/100 (${q.tier}). ${q.reason}`, 1000),\n  };\n  if (lead.website) record.Website = websiteUrl(lead.website);\n  return { data: [record], duplicate_check_fields: ['Email'], trigger: [] };\n}\n\nfunction plainNoteText(lead, q, leadId) {\n  return [\n    `Lead score ${q.score}/100 (${q.tier}), scored by ${q.scored_by === 'ai' ? 'Google Gemini' : 'the rules fallback'}.`,\n    q.reason,\n    `Suggested next step: ${NEXT_STEP_TEXT[q.next_step] || q.next_step}`,\n    `Red flags: ${q.red_flags.length ? q.red_flags.join(', ') : 'none'}`,\n    `Service: ${lead.service} | Budget: ${lead.budget} | Timeline: ${lead.timeline}`,\n    '',\n    'Message:',\n    lead.message,\n    '',\n    `Source: n8n lead pipeline demo. Lead id ${leadId}.`,\n  ].join('\\n');\n}\n\nfunction zohoNote(lead, q, { leadId }) {\n  return { data: [{ Note_Title: oneLine(`Lead score ${q.score}/100 (${q.tier})`, 120), Note_Content: plainNoteText(lead, q, leadId) }] };\n}\n\nconst NEXT_STEP_TEXT = {\n  book_call: 'Book a discovery call',\n  send_proposal_questions: 'Send scoping questions',\n  nurture: 'Add to nurture, check back later',\n  decline_politely: 'Decline politely',\n};\n\nfunction hubspotNote(lead, q, { contactId, leadId, nowMs }) {\n  const flags = q.red_flags.length ? q.red_flags.map((f) => `<li>${escapeHtml(f)}</li>`).join('') : '<li>none</li>';\n  const body = [\n    `<p><strong>Lead score ${q.score}/100 (${escapeHtml(q.tier)})</strong>, scored by ${q.scored_by === 'ai' ? 'Google Gemini' : 'the rules fallback'}.</p>`,\n    `<p>${escapeHtml(q.reason)}</p>`,\n    `<p><strong>Suggested next step:</strong> ${escapeHtml(NEXT_STEP_TEXT[q.next_step] || q.next_step)}</p>`,\n    `<p><strong>Red flags:</strong></p><ul>${flags}</ul>`,\n    `<p><strong>Service:</strong> ${escapeHtml(lead.service)}<br><strong>Budget:</strong> ${escapeHtml(lead.budget)}<br><strong>Timeline:</strong> ${escapeHtml(lead.timeline)}</p>`,\n    `<p><strong>Message:</strong><br>${escapeHtml(lead.message).replace(/\\n/g, '<br>')}</p>`,\n    `<p>Source: n8n lead pipeline demo. Lead id ${escapeHtml(leadId)}.</p>`,\n  ].join('');\n  return {\n    properties: { hs_timestamp: new Date(nowMs).toISOString(), hs_note_body: body },\n    associations: [{ to: { id: String(contactId) }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 202 }] }],\n  };\n}\n\nconst REPLY_BY_TIER = {\n  hot: 'Your project looks like a strong fit. Someone from the team will email you within one business day to set up a 30-minute discovery call.',\n  warm: 'Thanks for the details. We will send you a few short scoping questions within two business days so we can come back with a clear estimate.',\n  cold: 'Thanks for thinking of us. Based on what you shared we may not be the right fit right now, but we have saved your note and will be in touch if that changes.',\n};\n\nconst DEMO_FOOTER_TEXT =\n  'This is a live demo. Fernbrook Studio is a fictional business; this reply was sent by an n8n workflow built by Kabiir Labs (kabiirlabs.com) because this address was entered in the demo form at n8n.kabiirlabs.com. No further emails will be sent.';\n\nfunction leadReplyEmail(lead, q, { from, statusUrl, leadId }) {\n  const first = oneLine(lead.first_name, 40);\n  const subject = oneLine(`Thanks ${first}, we got your project details`, 120);\n  const lines = [\n    `Hi ${first},`,\n    '',\n    `Thanks for telling us about ${oneLine(lead.company, 120)}'s ${lead.service.toLowerCase()} project.`,\n    '',\n    REPLY_BY_TIER[q.tier],\n    '',\n    `You can see exactly what happened to your enquiry here: ${statusUrl}`,\n    '',\n    'Fernbrook Studio (demo)',\n    '',\n    '--',\n    DEMO_FOOTER_TEXT,\n  ];\n  const html = [\n    '<div style=\"font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.55;color:#1f2933;max-width:560px\">',\n    `<p>Hi ${escapeHtml(first)},</p>`,\n    `<p>Thanks for telling us about ${escapeHtml(lead.company)}'s ${escapeHtml(lead.service.toLowerCase())} project.</p>`,\n    `<p>${escapeHtml(REPLY_BY_TIER[q.tier])}</p>`,\n    `<p><a href=\"${escapeHtml(statusUrl)}\" style=\"color:#2f6f4f\">See what happened to your enquiry, step by step</a></p>`,\n    '<p>Fernbrook Studio (demo)</p>',\n    `<hr style=\"border:none;border-top:1px solid #e3e7eb;margin:24px 0\"><p style=\"font-size:12px;color:#6b7785\">${escapeHtml(DEMO_FOOTER_TEXT)}</p>`,\n    '</div>',\n  ].join('');\n  return { from, to: [lead.email], subject, text: lines.join('\\n'), html, headers: { 'X-Entity-Ref-ID': leadId } };\n}\n\nfunction teamAlertEmail(lead, q, { from, to, statusUrl, crm, problems }) {\n  const urgent = problems.length > 0;\n  const subject = oneLine(\n    urgent\n      ? `[ACTION NEEDED] Lead from ${lead.company}: ${problems.join('; ')}`\n      : `[${q.tier.toUpperCase()} ${q.score}] New lead: ${lead.company}`,\n    150,\n  );\n  const crmName = CRM_NAMES[crm.name] || 'CRM';\n  const crmLine = crm.saved\n    ? `${crmName} record: ${crm.contactUrl || '(saved; open the CRM to see it)'}`\n    : `${crmName}: NOT SAVED. The details below are the only copy; add them by hand.`;\n  const text = [\n    urgent ? `Something failed for this lead: ${problems.join('; ')}. The lead still got the reply email unless listed above.` : 'New lead qualified by the pipeline.',\n    '',\n    `Score: ${q.score}/100 (${q.tier}), by ${q.scored_by === 'ai' ? 'Gemini' : 'rules fallback'}${q.fallback_reason ? ` (${q.fallback_reason})` : ''}`,\n    `Why: ${q.reason}`,\n    `Next step: ${NEXT_STEP_TEXT[q.next_step] || q.next_step}`,\n    `Red flags: ${q.red_flags.length ? q.red_flags.join(', ') : 'none'}`,\n    '',\n    `Name: ${lead.name}`,\n    `Email: ${lead.email}`,\n    `Company: ${lead.company}`,\n    `Website: ${lead.website || '-'}`,\n    `Service: ${lead.service} | Budget: ${lead.budget} | Timeline: ${lead.timeline}`,\n    '',\n    'Message:',\n    lead.message,\n    '',\n    crmLine,\n    `Pipeline status: ${statusUrl}`,\n  ].join('\\n');\n  return { from, to: [to], subject, text };\n}\n\nconst v = $('Validate & spam guard').first().json;\nconst q = JSON.parse($('Check AI answer').first().json.detail);\nconst crm = $('Prepare contact').first().json.crm;\nconst contactId = JSON.parse($('Record contact').first().json.detail).contact_id;\nif (crm === 'zoho') {\n  return [{ json: { crm, url: ($env.ZOHO_API_BASE || 'https://www.zohoapis.com') + '/crm/v8/Leads/' + encodeURIComponent(contactId) + '/Notes', body: zohoNote(v.lead, q, { leadId: v.lead_id }) } }];\n}\nreturn [{ json: { crm, url: ($env.HUBSPOT_BASE || 'https://api.hubapi.com') + '/crm/v3/objects/notes', body: hubspotNote(v.lead, q, { contactId, leadId: v.lead_id, nowMs: Date.now() }) } }];"
       },
       "id": "dbb13305-127b-48c8-a396-57d096c9e0d4",
       "name": "Prepare note",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        5250,
+        5500,
+        510
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f96f171f-cecd-41ef-abc4-26d7214f3d87",
+              "leftValue": "={{ $json.crm === 'zoho' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "602a637f-2269-4c32-a639-6e305a692389",
+      "name": "Zoho note?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        5750,
         510
       ]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ ($env.HUBSPOT_BASE || 'https://api.hubapi.com') + '/crm/v3/objects/notes' }}",
+        "url": "={{ $json.url }}",
         "sendBody": true,
         "contentType": "json",
         "specifyBody": "json",
@@ -703,8 +815,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
       "position": [
-        5500,
-        510
+        6000,
+        680
       ],
       "retryOnFail": true,
       "maxTries": 3,
@@ -720,16 +832,50 @@
     },
     {
       "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}",
+        "options": {
+          "timeout": 15000
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth2Api"
+      },
+      "id": "436c0f66-ffcf-49ea-a4cc-188db19badc6",
+      "name": "Zoho: add note",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        6000,
+        340
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "credentials": {
+        "oAuth2Api": {
+          "id": "__CRED_ZOHO__",
+          "name": "Zoho CRM (self client)"
+        }
+      },
+      "notes": "Note on the lead with the score, reason and brief."
+    },
+    {
+      "parameters": {
         "mode": "runOnceForAllItems",
         "language": "javaScript",
-        "jsCode": "function event(lead_id, step, state, summary, detail) {\n  return { json: { lead_id, step, state, summary: String(summary).slice(0, 300), detail: detail === undefined ? '' : JSON.stringify(detail) } };\n}\nfunction errorText(e) {\n  if (!e) return 'unknown error';\n  if (typeof e === 'string') return e.slice(0, 200);\n  const parts = [e.message, e.description].filter(Boolean).map(String);\n  return (parts.join(': ') || JSON.stringify(e)).replace(/\\s+/g, ' ').slice(0, 200);\n}\nconst v = $('Validate & spam guard').first().json;\nconst res = $input.first().json;\nif (res.error || !res.id) return [event(v.lead_id, 'crm_note', 'failed', 'HubSpot did not save the note: ' + errorText(res.error || 'no id returned'), { error: errorText(res.error || 'no id') })];\nreturn [event(v.lead_id, 'crm_note', 'ok', 'Note with the score, reason and brief attached to the contact (note id ' + res.id + ').', { note_id: String(res.id) })];"
+        "jsCode": "function event(lead_id, step, state, summary, detail) {\n  return { json: { lead_id, step, state, summary: String(summary).slice(0, 300), detail: detail === undefined ? '' : JSON.stringify(detail) } };\n}\nfunction errorText(e) {\n  if (!e) return 'unknown error';\n  if (typeof e === 'string') return e.slice(0, 200);\n  const parts = [e.message, e.description].filter(Boolean).map(String);\n  return (parts.join(': ') || JSON.stringify(e)).replace(/\\s+/g, ' ').slice(0, 200);\n}\nconst v = $('Validate & spam guard').first().json;\nconst crm = $('Prepare note').first().json.crm;\nconst name = crm === 'zoho' ? 'Zoho CRM' : 'HubSpot';\nconst res = $input.first().json;\nconst id = crm === 'zoho'\n  ? (Array.isArray(res.data) && res.data[0] && res.data[0].status === 'success' && res.data[0].details ? res.data[0].details.id : null)\n  : res.id;\nif (res.error || !id) return [event(v.lead_id, 'crm_note', 'failed', name + ' did not save the note: ' + errorText(res.error || 'no id returned'), { crm, error: errorText(res.error || 'no id') })];\nreturn [event(v.lead_id, 'crm_note', 'ok', 'Note with the score, reason and brief attached to the ' + (crm === 'zoho' ? 'lead' : 'contact') + ' (note id ' + id + ').', { crm, note_id: String(id) })];"
       },
       "id": "6d3ea476-3942-4702-a85a-5a5f9e8edf64",
       "name": "Record note",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        5750,
+        6250,
         510
       ]
     },
@@ -737,14 +883,14 @@
       "parameters": {
         "mode": "runOnceForAllItems",
         "language": "javaScript",
-        "jsCode": "function event(lead_id, step, state, summary, detail) {\n  return { json: { lead_id, step, state, summary: String(summary).slice(0, 300), detail: detail === undefined ? '' : JSON.stringify(detail) } };\n}\nfunction errorText(e) {\n  if (!e) return 'unknown error';\n  if (typeof e === 'string') return e.slice(0, 200);\n  const parts = [e.message, e.description].filter(Boolean).map(String);\n  return (parts.join(': ') || JSON.stringify(e)).replace(/\\s+/g, ' ').slice(0, 200);\n}\nconst v = $('Validate & spam guard').first().json;\nreturn [event(v.lead_id, 'crm_note', 'skipped', 'Skipped: there is no contact to attach a note to. The team alert carries the full details instead.')];"
+        "jsCode": "function event(lead_id, step, state, summary, detail) {\n  return { json: { lead_id, step, state, summary: String(summary).slice(0, 300), detail: detail === undefined ? '' : JSON.stringify(detail) } };\n}\nfunction errorText(e) {\n  if (!e) return 'unknown error';\n  if (typeof e === 'string') return e.slice(0, 200);\n  const parts = [e.message, e.description].filter(Boolean).map(String);\n  return (parts.join(': ') || JSON.stringify(e)).replace(/\\s+/g, ' ').slice(0, 200);\n}\nconst v = $('Validate & spam guard').first().json;\nreturn [event(v.lead_id, 'crm_note', 'skipped', 'Skipped: there is no CRM record to attach a note to. The team alert carries the full details instead.')];"
       },
       "id": "8131b455-e848-42b9-a446-db80fc06e4d2",
       "name": "Skip note",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        5750,
+        6250,
         850
       ]
     },
@@ -770,7 +916,7 @@
       "type": "n8n-nodes-base.dataTable",
       "typeVersion": 1.1,
       "position": [
-        6000,
+        6500,
         680
       ]
     },
@@ -778,14 +924,14 @@
       "parameters": {
         "mode": "runOnceForAllItems",
         "language": "javaScript",
-        "jsCode": "// HubSpot payloads and the two emails. Every user value is escaped before it goes into HTML.\n\nfunction escapeHtml(s) {\n  return String(s ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n}\n\nfunction oneLine(s, max) {\n  return String(s ?? '').replace(/[\\r\\n\\t]+/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, max);\n}\n\nfunction websiteUrl(w) {\n  if (!w) return '';\n  return /^https?:\\/\\//i.test(w) ? w : `https://${w}`;\n}\n\nfunction hubspotContactUpsert(lead) {\n  const properties = {\n    email: lead.email,\n    firstname: lead.first_name,\n    lastname: lead.last_name || '',\n    company: lead.company,\n    lifecyclestage: 'lead',\n    hs_lead_status: 'NEW',\n  };\n  if (lead.website) properties.website = websiteUrl(lead.website);\n  return { inputs: [{ idProperty: 'email', id: lead.email, properties }] };\n}\n\nconst NEXT_STEP_TEXT = {\n  book_call: 'Book a discovery call',\n  send_proposal_questions: 'Send scoping questions',\n  nurture: 'Add to nurture, check back later',\n  decline_politely: 'Decline politely',\n};\n\nfunction hubspotNote(lead, q, { contactId, leadId, nowMs }) {\n  const flags = q.red_flags.length ? q.red_flags.map((f) => `<li>${escapeHtml(f)}</li>`).join('') : '<li>none</li>';\n  const body = [\n    `<p><strong>Lead score ${q.score}/100 (${escapeHtml(q.tier)})</strong>, scored by ${q.scored_by === 'ai' ? 'Google Gemini' : 'the rules fallback'}.</p>`,\n    `<p>${escapeHtml(q.reason)}</p>`,\n    `<p><strong>Suggested next step:</strong> ${escapeHtml(NEXT_STEP_TEXT[q.next_step] || q.next_step)}</p>`,\n    `<p><strong>Red flags:</strong></p><ul>${flags}</ul>`,\n    `<p><strong>Service:</strong> ${escapeHtml(lead.service)}<br><strong>Budget:</strong> ${escapeHtml(lead.budget)}<br><strong>Timeline:</strong> ${escapeHtml(lead.timeline)}</p>`,\n    `<p><strong>Message:</strong><br>${escapeHtml(lead.message).replace(/\\n/g, '<br>')}</p>`,\n    `<p>Source: n8n lead pipeline demo. Lead id ${escapeHtml(leadId)}.</p>`,\n  ].join('');\n  return {\n    properties: { hs_timestamp: new Date(nowMs).toISOString(), hs_note_body: body },\n    associations: [{ to: { id: String(contactId) }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 202 }] }],\n  };\n}\n\nconst REPLY_BY_TIER = {\n  hot: 'Your project looks like a strong fit. Someone from the team will email you within one business day to set up a 30-minute discovery call.',\n  warm: 'Thanks for the details. We will send you a few short scoping questions within two business days so we can come back with a clear estimate.',\n  cold: 'Thanks for thinking of us. Based on what you shared we may not be the right fit right now, but we have saved your note and will be in touch if that changes.',\n};\n\nconst DEMO_FOOTER_TEXT =\n  'This is a live demo. Fernbrook Studio is a fictional business; this reply was sent by an n8n workflow built by Kabiir Labs (kabiirlabs.com) because this address was entered in the demo form at n8n.kabiirlabs.com. No further emails will be sent.';\n\nfunction leadReplyEmail(lead, q, { from, statusUrl, leadId }) {\n  const first = oneLine(lead.first_name, 40);\n  const subject = oneLine(`Thanks ${first}, we got your project details`, 120);\n  const lines = [\n    `Hi ${first},`,\n    '',\n    `Thanks for telling us about ${oneLine(lead.company, 120)}'s ${lead.service.toLowerCase()} project.`,\n    '',\n    REPLY_BY_TIER[q.tier],\n    '',\n    `You can see exactly what happened to your enquiry here: ${statusUrl}`,\n    '',\n    'Fernbrook Studio (demo)',\n    '',\n    '--',\n    DEMO_FOOTER_TEXT,\n  ];\n  const html = [\n    '<div style=\"font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.55;color:#1f2933;max-width:560px\">',\n    `<p>Hi ${escapeHtml(first)},</p>`,\n    `<p>Thanks for telling us about ${escapeHtml(lead.company)}'s ${escapeHtml(lead.service.toLowerCase())} project.</p>`,\n    `<p>${escapeHtml(REPLY_BY_TIER[q.tier])}</p>`,\n    `<p><a href=\"${escapeHtml(statusUrl)}\" style=\"color:#2f6f4f\">See what happened to your enquiry, step by step</a></p>`,\n    '<p>Fernbrook Studio (demo)</p>',\n    `<hr style=\"border:none;border-top:1px solid #e3e7eb;margin:24px 0\"><p style=\"font-size:12px;color:#6b7785\">${escapeHtml(DEMO_FOOTER_TEXT)}</p>`,\n    '</div>',\n  ].join('');\n  return { from, to: [lead.email], subject, text: lines.join('\\n'), html, headers: { 'X-Entity-Ref-ID': leadId } };\n}\n\nfunction teamAlertEmail(lead, q, { from, to, statusUrl, crm, problems }) {\n  const urgent = problems.length > 0;\n  const subject = oneLine(\n    urgent\n      ? `[ACTION NEEDED] Lead from ${lead.company}: ${problems.join('; ')}`\n      : `[${q.tier.toUpperCase()} ${q.score}] New lead: ${lead.company}`,\n    150,\n  );\n  const crmLine = crm.contactUrl\n    ? `HubSpot contact: ${crm.contactUrl}`\n    : 'HubSpot: NOT SAVED. The details below are the only copy; add them by hand.';\n  const text = [\n    urgent ? `Something failed for this lead: ${problems.join('; ')}. The lead still got the reply email unless listed above.` : 'New lead qualified by the pipeline.',\n    '',\n    `Score: ${q.score}/100 (${q.tier}), by ${q.scored_by === 'ai' ? 'Gemini' : 'rules fallback'}${q.fallback_reason ? ` (${q.fallback_reason})` : ''}`,\n    `Why: ${q.reason}`,\n    `Next step: ${NEXT_STEP_TEXT[q.next_step] || q.next_step}`,\n    `Red flags: ${q.red_flags.length ? q.red_flags.join(', ') : 'none'}`,\n    '',\n    `Name: ${lead.name}`,\n    `Email: ${lead.email}`,\n    `Company: ${lead.company}`,\n    `Website: ${lead.website || '-'}`,\n    `Service: ${lead.service} | Budget: ${lead.budget} | Timeline: ${lead.timeline}`,\n    '',\n    'Message:',\n    lead.message,\n    '',\n    crmLine,\n    `Pipeline status: ${statusUrl}`,\n  ].join('\\n');\n  return { from, to: [to], subject, text };\n}\n\nconst v = $('Validate & spam guard').first().json;\nconst q = JSON.parse($('Check AI answer').first().json.detail);\nconst statusUrl = v.public_base + '/status?id=' + v.lead_id;\nreturn [{ json: { body: leadReplyEmail(v.lead, q, { from: $env.EMAIL_FROM_LEADS, statusUrl, leadId: v.lead_id }) } }];"
+        "jsCode": "// HubSpot payloads and the two emails. Every user value is escaped before it goes into HTML.\n\nfunction escapeHtml(s) {\n  return String(s ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n}\n\nfunction oneLine(s, max) {\n  return String(s ?? '').replace(/[\\r\\n\\t]+/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, max);\n}\n\nfunction websiteUrl(w) {\n  if (!w) return '';\n  return /^https?:\\/\\//i.test(w) ? w : `https://${w}`;\n}\n\nfunction hubspotContactUpsert(lead) {\n  const properties = {\n    email: lead.email,\n    firstname: lead.first_name,\n    lastname: lead.last_name || '',\n    company: lead.company,\n    lifecyclestage: 'lead',\n    hs_lead_status: 'NEW',\n  };\n  if (lead.website) properties.website = websiteUrl(lead.website);\n  return { inputs: [{ idProperty: 'email', id: lead.email, properties }] };\n}\n\nconst CRM_NAMES = { hubspot: 'HubSpot', zoho: 'Zoho CRM' };\n\nfunction zohoLeadUpsert(lead, q) {\n  const record = {\n    Last_Name: lead.last_name || lead.first_name,\n    First_Name: lead.last_name ? lead.first_name : '',\n    Email: lead.email,\n    Company: lead.company,\n    Lead_Status: 'Not Contacted',\n    Description: oneLine(`Score ${q.score}/100 (${q.tier}). ${q.reason}`, 1000),\n  };\n  if (lead.website) record.Website = websiteUrl(lead.website);\n  return { data: [record], duplicate_check_fields: ['Email'], trigger: [] };\n}\n\nfunction plainNoteText(lead, q, leadId) {\n  return [\n    `Lead score ${q.score}/100 (${q.tier}), scored by ${q.scored_by === 'ai' ? 'Google Gemini' : 'the rules fallback'}.`,\n    q.reason,\n    `Suggested next step: ${NEXT_STEP_TEXT[q.next_step] || q.next_step}`,\n    `Red flags: ${q.red_flags.length ? q.red_flags.join(', ') : 'none'}`,\n    `Service: ${lead.service} | Budget: ${lead.budget} | Timeline: ${lead.timeline}`,\n    '',\n    'Message:',\n    lead.message,\n    '',\n    `Source: n8n lead pipeline demo. Lead id ${leadId}.`,\n  ].join('\\n');\n}\n\nfunction zohoNote(lead, q, { leadId }) {\n  return { data: [{ Note_Title: oneLine(`Lead score ${q.score}/100 (${q.tier})`, 120), Note_Content: plainNoteText(lead, q, leadId) }] };\n}\n\nconst NEXT_STEP_TEXT = {\n  book_call: 'Book a discovery call',\n  send_proposal_questions: 'Send scoping questions',\n  nurture: 'Add to nurture, check back later',\n  decline_politely: 'Decline politely',\n};\n\nfunction hubspotNote(lead, q, { contactId, leadId, nowMs }) {\n  const flags = q.red_flags.length ? q.red_flags.map((f) => `<li>${escapeHtml(f)}</li>`).join('') : '<li>none</li>';\n  const body = [\n    `<p><strong>Lead score ${q.score}/100 (${escapeHtml(q.tier)})</strong>, scored by ${q.scored_by === 'ai' ? 'Google Gemini' : 'the rules fallback'}.</p>`,\n    `<p>${escapeHtml(q.reason)}</p>`,\n    `<p><strong>Suggested next step:</strong> ${escapeHtml(NEXT_STEP_TEXT[q.next_step] || q.next_step)}</p>`,\n    `<p><strong>Red flags:</strong></p><ul>${flags}</ul>`,\n    `<p><strong>Service:</strong> ${escapeHtml(lead.service)}<br><strong>Budget:</strong> ${escapeHtml(lead.budget)}<br><strong>Timeline:</strong> ${escapeHtml(lead.timeline)}</p>`,\n    `<p><strong>Message:</strong><br>${escapeHtml(lead.message).replace(/\\n/g, '<br>')}</p>`,\n    `<p>Source: n8n lead pipeline demo. Lead id ${escapeHtml(leadId)}.</p>`,\n  ].join('');\n  return {\n    properties: { hs_timestamp: new Date(nowMs).toISOString(), hs_note_body: body },\n    associations: [{ to: { id: String(contactId) }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 202 }] }],\n  };\n}\n\nconst REPLY_BY_TIER = {\n  hot: 'Your project looks like a strong fit. Someone from the team will email you within one business day to set up a 30-minute discovery call.',\n  warm: 'Thanks for the details. We will send you a few short scoping questions within two business days so we can come back with a clear estimate.',\n  cold: 'Thanks for thinking of us. Based on what you shared we may not be the right fit right now, but we have saved your note and will be in touch if that changes.',\n};\n\nconst DEMO_FOOTER_TEXT =\n  'This is a live demo. Fernbrook Studio is a fictional business; this reply was sent by an n8n workflow built by Kabiir Labs (kabiirlabs.com) because this address was entered in the demo form at n8n.kabiirlabs.com. No further emails will be sent.';\n\nfunction leadReplyEmail(lead, q, { from, statusUrl, leadId }) {\n  const first = oneLine(lead.first_name, 40);\n  const subject = oneLine(`Thanks ${first}, we got your project details`, 120);\n  const lines = [\n    `Hi ${first},`,\n    '',\n    `Thanks for telling us about ${oneLine(lead.company, 120)}'s ${lead.service.toLowerCase()} project.`,\n    '',\n    REPLY_BY_TIER[q.tier],\n    '',\n    `You can see exactly what happened to your enquiry here: ${statusUrl}`,\n    '',\n    'Fernbrook Studio (demo)',\n    '',\n    '--',\n    DEMO_FOOTER_TEXT,\n  ];\n  const html = [\n    '<div style=\"font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.55;color:#1f2933;max-width:560px\">',\n    `<p>Hi ${escapeHtml(first)},</p>`,\n    `<p>Thanks for telling us about ${escapeHtml(lead.company)}'s ${escapeHtml(lead.service.toLowerCase())} project.</p>`,\n    `<p>${escapeHtml(REPLY_BY_TIER[q.tier])}</p>`,\n    `<p><a href=\"${escapeHtml(statusUrl)}\" style=\"color:#2f6f4f\">See what happened to your enquiry, step by step</a></p>`,\n    '<p>Fernbrook Studio (demo)</p>',\n    `<hr style=\"border:none;border-top:1px solid #e3e7eb;margin:24px 0\"><p style=\"font-size:12px;color:#6b7785\">${escapeHtml(DEMO_FOOTER_TEXT)}</p>`,\n    '</div>',\n  ].join('');\n  return { from, to: [lead.email], subject, text: lines.join('\\n'), html, headers: { 'X-Entity-Ref-ID': leadId } };\n}\n\nfunction teamAlertEmail(lead, q, { from, to, statusUrl, crm, problems }) {\n  const urgent = problems.length > 0;\n  const subject = oneLine(\n    urgent\n      ? `[ACTION NEEDED] Lead from ${lead.company}: ${problems.join('; ')}`\n      : `[${q.tier.toUpperCase()} ${q.score}] New lead: ${lead.company}`,\n    150,\n  );\n  const crmName = CRM_NAMES[crm.name] || 'CRM';\n  const crmLine = crm.saved\n    ? `${crmName} record: ${crm.contactUrl || '(saved; open the CRM to see it)'}`\n    : `${crmName}: NOT SAVED. The details below are the only copy; add them by hand.`;\n  const text = [\n    urgent ? `Something failed for this lead: ${problems.join('; ')}. The lead still got the reply email unless listed above.` : 'New lead qualified by the pipeline.',\n    '',\n    `Score: ${q.score}/100 (${q.tier}), by ${q.scored_by === 'ai' ? 'Gemini' : 'rules fallback'}${q.fallback_reason ? ` (${q.fallback_reason})` : ''}`,\n    `Why: ${q.reason}`,\n    `Next step: ${NEXT_STEP_TEXT[q.next_step] || q.next_step}`,\n    `Red flags: ${q.red_flags.length ? q.red_flags.join(', ') : 'none'}`,\n    '',\n    `Name: ${lead.name}`,\n    `Email: ${lead.email}`,\n    `Company: ${lead.company}`,\n    `Website: ${lead.website || '-'}`,\n    `Service: ${lead.service} | Budget: ${lead.budget} | Timeline: ${lead.timeline}`,\n    '',\n    'Message:',\n    lead.message,\n    '',\n    crmLine,\n    `Pipeline status: ${statusUrl}`,\n  ].join('\\n');\n  return { from, to: [to], subject, text };\n}\n\nconst v = $('Validate & spam guard').first().json;\nconst q = JSON.parse($('Check AI answer').first().json.detail);\nconst statusUrl = v.public_base + '/status?id=' + v.lead_id;\nreturn [{ json: { body: leadReplyEmail(v.lead, q, { from: $env.EMAIL_FROM_LEADS, statusUrl, leadId: v.lead_id }) } }];"
       },
       "id": "1c825cca-14a3-4fdc-abfa-4df7173c05ab",
       "name": "Prepare reply",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        6250,
+        6750,
         680
       ]
     },
@@ -817,7 +963,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
       "position": [
-        6500,
+        7000,
         680
       ],
       "retryOnFail": true,
@@ -843,7 +989,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        6750,
+        7250,
         680
       ]
     },
@@ -869,7 +1015,7 @@
       "type": "n8n-nodes-base.dataTable",
       "typeVersion": 1.1,
       "position": [
-        7000,
+        7500,
         680
       ]
     },
@@ -877,14 +1023,14 @@
       "parameters": {
         "mode": "runOnceForAllItems",
         "language": "javaScript",
-        "jsCode": "// HubSpot payloads and the two emails. Every user value is escaped before it goes into HTML.\n\nfunction escapeHtml(s) {\n  return String(s ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n}\n\nfunction oneLine(s, max) {\n  return String(s ?? '').replace(/[\\r\\n\\t]+/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, max);\n}\n\nfunction websiteUrl(w) {\n  if (!w) return '';\n  return /^https?:\\/\\//i.test(w) ? w : `https://${w}`;\n}\n\nfunction hubspotContactUpsert(lead) {\n  const properties = {\n    email: lead.email,\n    firstname: lead.first_name,\n    lastname: lead.last_name || '',\n    company: lead.company,\n    lifecyclestage: 'lead',\n    hs_lead_status: 'NEW',\n  };\n  if (lead.website) properties.website = websiteUrl(lead.website);\n  return { inputs: [{ idProperty: 'email', id: lead.email, properties }] };\n}\n\nconst NEXT_STEP_TEXT = {\n  book_call: 'Book a discovery call',\n  send_proposal_questions: 'Send scoping questions',\n  nurture: 'Add to nurture, check back later',\n  decline_politely: 'Decline politely',\n};\n\nfunction hubspotNote(lead, q, { contactId, leadId, nowMs }) {\n  const flags = q.red_flags.length ? q.red_flags.map((f) => `<li>${escapeHtml(f)}</li>`).join('') : '<li>none</li>';\n  const body = [\n    `<p><strong>Lead score ${q.score}/100 (${escapeHtml(q.tier)})</strong>, scored by ${q.scored_by === 'ai' ? 'Google Gemini' : 'the rules fallback'}.</p>`,\n    `<p>${escapeHtml(q.reason)}</p>`,\n    `<p><strong>Suggested next step:</strong> ${escapeHtml(NEXT_STEP_TEXT[q.next_step] || q.next_step)}</p>`,\n    `<p><strong>Red flags:</strong></p><ul>${flags}</ul>`,\n    `<p><strong>Service:</strong> ${escapeHtml(lead.service)}<br><strong>Budget:</strong> ${escapeHtml(lead.budget)}<br><strong>Timeline:</strong> ${escapeHtml(lead.timeline)}</p>`,\n    `<p><strong>Message:</strong><br>${escapeHtml(lead.message).replace(/\\n/g, '<br>')}</p>`,\n    `<p>Source: n8n lead pipeline demo. Lead id ${escapeHtml(leadId)}.</p>`,\n  ].join('');\n  return {\n    properties: { hs_timestamp: new Date(nowMs).toISOString(), hs_note_body: body },\n    associations: [{ to: { id: String(contactId) }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 202 }] }],\n  };\n}\n\nconst REPLY_BY_TIER = {\n  hot: 'Your project looks like a strong fit. Someone from the team will email you within one business day to set up a 30-minute discovery call.',\n  warm: 'Thanks for the details. We will send you a few short scoping questions within two business days so we can come back with a clear estimate.',\n  cold: 'Thanks for thinking of us. Based on what you shared we may not be the right fit right now, but we have saved your note and will be in touch if that changes.',\n};\n\nconst DEMO_FOOTER_TEXT =\n  'This is a live demo. Fernbrook Studio is a fictional business; this reply was sent by an n8n workflow built by Kabiir Labs (kabiirlabs.com) because this address was entered in the demo form at n8n.kabiirlabs.com. No further emails will be sent.';\n\nfunction leadReplyEmail(lead, q, { from, statusUrl, leadId }) {\n  const first = oneLine(lead.first_name, 40);\n  const subject = oneLine(`Thanks ${first}, we got your project details`, 120);\n  const lines = [\n    `Hi ${first},`,\n    '',\n    `Thanks for telling us about ${oneLine(lead.company, 120)}'s ${lead.service.toLowerCase()} project.`,\n    '',\n    REPLY_BY_TIER[q.tier],\n    '',\n    `You can see exactly what happened to your enquiry here: ${statusUrl}`,\n    '',\n    'Fernbrook Studio (demo)',\n    '',\n    '--',\n    DEMO_FOOTER_TEXT,\n  ];\n  const html = [\n    '<div style=\"font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.55;color:#1f2933;max-width:560px\">',\n    `<p>Hi ${escapeHtml(first)},</p>`,\n    `<p>Thanks for telling us about ${escapeHtml(lead.company)}'s ${escapeHtml(lead.service.toLowerCase())} project.</p>`,\n    `<p>${escapeHtml(REPLY_BY_TIER[q.tier])}</p>`,\n    `<p><a href=\"${escapeHtml(statusUrl)}\" style=\"color:#2f6f4f\">See what happened to your enquiry, step by step</a></p>`,\n    '<p>Fernbrook Studio (demo)</p>',\n    `<hr style=\"border:none;border-top:1px solid #e3e7eb;margin:24px 0\"><p style=\"font-size:12px;color:#6b7785\">${escapeHtml(DEMO_FOOTER_TEXT)}</p>`,\n    '</div>',\n  ].join('');\n  return { from, to: [lead.email], subject, text: lines.join('\\n'), html, headers: { 'X-Entity-Ref-ID': leadId } };\n}\n\nfunction teamAlertEmail(lead, q, { from, to, statusUrl, crm, problems }) {\n  const urgent = problems.length > 0;\n  const subject = oneLine(\n    urgent\n      ? `[ACTION NEEDED] Lead from ${lead.company}: ${problems.join('; ')}`\n      : `[${q.tier.toUpperCase()} ${q.score}] New lead: ${lead.company}`,\n    150,\n  );\n  const crmLine = crm.contactUrl\n    ? `HubSpot contact: ${crm.contactUrl}`\n    : 'HubSpot: NOT SAVED. The details below are the only copy; add them by hand.';\n  const text = [\n    urgent ? `Something failed for this lead: ${problems.join('; ')}. The lead still got the reply email unless listed above.` : 'New lead qualified by the pipeline.',\n    '',\n    `Score: ${q.score}/100 (${q.tier}), by ${q.scored_by === 'ai' ? 'Gemini' : 'rules fallback'}${q.fallback_reason ? ` (${q.fallback_reason})` : ''}`,\n    `Why: ${q.reason}`,\n    `Next step: ${NEXT_STEP_TEXT[q.next_step] || q.next_step}`,\n    `Red flags: ${q.red_flags.length ? q.red_flags.join(', ') : 'none'}`,\n    '',\n    `Name: ${lead.name}`,\n    `Email: ${lead.email}`,\n    `Company: ${lead.company}`,\n    `Website: ${lead.website || '-'}`,\n    `Service: ${lead.service} | Budget: ${lead.budget} | Timeline: ${lead.timeline}`,\n    '',\n    'Message:',\n    lead.message,\n    '',\n    crmLine,\n    `Pipeline status: ${statusUrl}`,\n  ].join('\\n');\n  return { from, to: [to], subject, text };\n}\n\nconst v = $('Validate & spam guard').first().json;\nconst q = JSON.parse($('Check AI answer').first().json.detail);\nconst contact = $('Record contact').first().json;\nconst problems = [];\nif (contact.state !== 'ok') problems.push('HubSpot contact not saved');\nconst note = $('Log: note').first().json;\nif (note.state === 'failed') problems.push('HubSpot note not saved');\nif ($('Record reply').first().json.state !== 'ok') problems.push('reply email not sent');\nconst contactId = contact.state === 'ok' ? JSON.parse(contact.detail).contact_id : null;\nconst portal = $env.HUBSPOT_PORTAL_ID;\nconst contactUrl = contactId && portal ? 'https://app.hubspot.com/contacts/' + portal + '/record/0-1/' + contactId : null;\nconst statusUrl = v.public_base + '/status?id=' + v.lead_id;\nreturn [{ json: { problems, body: teamAlertEmail(v.lead, q, { from: $env.EMAIL_FROM_ALERTS || $env.EMAIL_FROM_LEADS, to: $env.TEAM_EMAIL, statusUrl, crm: { contactUrl }, problems }) } }];"
+        "jsCode": "// HubSpot payloads and the two emails. Every user value is escaped before it goes into HTML.\n\nfunction escapeHtml(s) {\n  return String(s ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\n}\n\nfunction oneLine(s, max) {\n  return String(s ?? '').replace(/[\\r\\n\\t]+/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, max);\n}\n\nfunction websiteUrl(w) {\n  if (!w) return '';\n  return /^https?:\\/\\//i.test(w) ? w : `https://${w}`;\n}\n\nfunction hubspotContactUpsert(lead) {\n  const properties = {\n    email: lead.email,\n    firstname: lead.first_name,\n    lastname: lead.last_name || '',\n    company: lead.company,\n    lifecyclestage: 'lead',\n    hs_lead_status: 'NEW',\n  };\n  if (lead.website) properties.website = websiteUrl(lead.website);\n  return { inputs: [{ idProperty: 'email', id: lead.email, properties }] };\n}\n\nconst CRM_NAMES = { hubspot: 'HubSpot', zoho: 'Zoho CRM' };\n\nfunction zohoLeadUpsert(lead, q) {\n  const record = {\n    Last_Name: lead.last_name || lead.first_name,\n    First_Name: lead.last_name ? lead.first_name : '',\n    Email: lead.email,\n    Company: lead.company,\n    Lead_Status: 'Not Contacted',\n    Description: oneLine(`Score ${q.score}/100 (${q.tier}). ${q.reason}`, 1000),\n  };\n  if (lead.website) record.Website = websiteUrl(lead.website);\n  return { data: [record], duplicate_check_fields: ['Email'], trigger: [] };\n}\n\nfunction plainNoteText(lead, q, leadId) {\n  return [\n    `Lead score ${q.score}/100 (${q.tier}), scored by ${q.scored_by === 'ai' ? 'Google Gemini' : 'the rules fallback'}.`,\n    q.reason,\n    `Suggested next step: ${NEXT_STEP_TEXT[q.next_step] || q.next_step}`,\n    `Red flags: ${q.red_flags.length ? q.red_flags.join(', ') : 'none'}`,\n    `Service: ${lead.service} | Budget: ${lead.budget} | Timeline: ${lead.timeline}`,\n    '',\n    'Message:',\n    lead.message,\n    '',\n    `Source: n8n lead pipeline demo. Lead id ${leadId}.`,\n  ].join('\\n');\n}\n\nfunction zohoNote(lead, q, { leadId }) {\n  return { data: [{ Note_Title: oneLine(`Lead score ${q.score}/100 (${q.tier})`, 120), Note_Content: plainNoteText(lead, q, leadId) }] };\n}\n\nconst NEXT_STEP_TEXT = {\n  book_call: 'Book a discovery call',\n  send_proposal_questions: 'Send scoping questions',\n  nurture: 'Add to nurture, check back later',\n  decline_politely: 'Decline politely',\n};\n\nfunction hubspotNote(lead, q, { contactId, leadId, nowMs }) {\n  const flags = q.red_flags.length ? q.red_flags.map((f) => `<li>${escapeHtml(f)}</li>`).join('') : '<li>none</li>';\n  const body = [\n    `<p><strong>Lead score ${q.score}/100 (${escapeHtml(q.tier)})</strong>, scored by ${q.scored_by === 'ai' ? 'Google Gemini' : 'the rules fallback'}.</p>`,\n    `<p>${escapeHtml(q.reason)}</p>`,\n    `<p><strong>Suggested next step:</strong> ${escapeHtml(NEXT_STEP_TEXT[q.next_step] || q.next_step)}</p>`,\n    `<p><strong>Red flags:</strong></p><ul>${flags}</ul>`,\n    `<p><strong>Service:</strong> ${escapeHtml(lead.service)}<br><strong>Budget:</strong> ${escapeHtml(lead.budget)}<br><strong>Timeline:</strong> ${escapeHtml(lead.timeline)}</p>`,\n    `<p><strong>Message:</strong><br>${escapeHtml(lead.message).replace(/\\n/g, '<br>')}</p>`,\n    `<p>Source: n8n lead pipeline demo. Lead id ${escapeHtml(leadId)}.</p>`,\n  ].join('');\n  return {\n    properties: { hs_timestamp: new Date(nowMs).toISOString(), hs_note_body: body },\n    associations: [{ to: { id: String(contactId) }, types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: 202 }] }],\n  };\n}\n\nconst REPLY_BY_TIER = {\n  hot: 'Your project looks like a strong fit. Someone from the team will email you within one business day to set up a 30-minute discovery call.',\n  warm: 'Thanks for the details. We will send you a few short scoping questions within two business days so we can come back with a clear estimate.',\n  cold: 'Thanks for thinking of us. Based on what you shared we may not be the right fit right now, but we have saved your note and will be in touch if that changes.',\n};\n\nconst DEMO_FOOTER_TEXT =\n  'This is a live demo. Fernbrook Studio is a fictional business; this reply was sent by an n8n workflow built by Kabiir Labs (kabiirlabs.com) because this address was entered in the demo form at n8n.kabiirlabs.com. No further emails will be sent.';\n\nfunction leadReplyEmail(lead, q, { from, statusUrl, leadId }) {\n  const first = oneLine(lead.first_name, 40);\n  const subject = oneLine(`Thanks ${first}, we got your project details`, 120);\n  const lines = [\n    `Hi ${first},`,\n    '',\n    `Thanks for telling us about ${oneLine(lead.company, 120)}'s ${lead.service.toLowerCase()} project.`,\n    '',\n    REPLY_BY_TIER[q.tier],\n    '',\n    `You can see exactly what happened to your enquiry here: ${statusUrl}`,\n    '',\n    'Fernbrook Studio (demo)',\n    '',\n    '--',\n    DEMO_FOOTER_TEXT,\n  ];\n  const html = [\n    '<div style=\"font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.55;color:#1f2933;max-width:560px\">',\n    `<p>Hi ${escapeHtml(first)},</p>`,\n    `<p>Thanks for telling us about ${escapeHtml(lead.company)}'s ${escapeHtml(lead.service.toLowerCase())} project.</p>`,\n    `<p>${escapeHtml(REPLY_BY_TIER[q.tier])}</p>`,\n    `<p><a href=\"${escapeHtml(statusUrl)}\" style=\"color:#2f6f4f\">See what happened to your enquiry, step by step</a></p>`,\n    '<p>Fernbrook Studio (demo)</p>',\n    `<hr style=\"border:none;border-top:1px solid #e3e7eb;margin:24px 0\"><p style=\"font-size:12px;color:#6b7785\">${escapeHtml(DEMO_FOOTER_TEXT)}</p>`,\n    '</div>',\n  ].join('');\n  return { from, to: [lead.email], subject, text: lines.join('\\n'), html, headers: { 'X-Entity-Ref-ID': leadId } };\n}\n\nfunction teamAlertEmail(lead, q, { from, to, statusUrl, crm, problems }) {\n  const urgent = problems.length > 0;\n  const subject = oneLine(\n    urgent\n      ? `[ACTION NEEDED] Lead from ${lead.company}: ${problems.join('; ')}`\n      : `[${q.tier.toUpperCase()} ${q.score}] New lead: ${lead.company}`,\n    150,\n  );\n  const crmName = CRM_NAMES[crm.name] || 'CRM';\n  const crmLine = crm.saved\n    ? `${crmName} record: ${crm.contactUrl || '(saved; open the CRM to see it)'}`\n    : `${crmName}: NOT SAVED. The details below are the only copy; add them by hand.`;\n  const text = [\n    urgent ? `Something failed for this lead: ${problems.join('; ')}. The lead still got the reply email unless listed above.` : 'New lead qualified by the pipeline.',\n    '',\n    `Score: ${q.score}/100 (${q.tier}), by ${q.scored_by === 'ai' ? 'Gemini' : 'rules fallback'}${q.fallback_reason ? ` (${q.fallback_reason})` : ''}`,\n    `Why: ${q.reason}`,\n    `Next step: ${NEXT_STEP_TEXT[q.next_step] || q.next_step}`,\n    `Red flags: ${q.red_flags.length ? q.red_flags.join(', ') : 'none'}`,\n    '',\n    `Name: ${lead.name}`,\n    `Email: ${lead.email}`,\n    `Company: ${lead.company}`,\n    `Website: ${lead.website || '-'}`,\n    `Service: ${lead.service} | Budget: ${lead.budget} | Timeline: ${lead.timeline}`,\n    '',\n    'Message:',\n    lead.message,\n    '',\n    crmLine,\n    `Pipeline status: ${statusUrl}`,\n  ].join('\\n');\n  return { from, to: [to], subject, text };\n}\n\nconst v = $('Validate & spam guard').first().json;\nconst q = JSON.parse($('Check AI answer').first().json.detail);\nconst contact = $('Record contact').first().json;\nconst crm = $('Prepare contact').first().json.crm;\nconst crmName = crm === 'zoho' ? 'Zoho CRM' : 'HubSpot';\nconst problems = [];\nif (contact.state !== 'ok') problems.push(crmName + (crm === 'zoho' ? ' lead' : ' contact') + ' not saved');\nconst note = $('Log: note').first().json;\nif (note.state === 'failed') problems.push(crmName + ' note not saved');\nif ($('Record reply').first().json.state !== 'ok') problems.push('reply email not sent');\nconst contactId = contact.state === 'ok' ? JSON.parse(contact.detail).contact_id : null;\nlet contactUrl = null;\nif (contactId && crm === 'hubspot' && $env.HUBSPOT_PORTAL_ID) contactUrl = 'https://app.hubspot.com/contacts/' + $env.HUBSPOT_PORTAL_ID + '/record/0-1/' + contactId;\nif (contactId && crm === 'zoho' && $env.ZOHO_ORG_ID) contactUrl = ($env.ZOHO_CRM_WEB || 'https://crm.zoho.com') + '/crm/org' + $env.ZOHO_ORG_ID + '/tab/Leads/' + contactId;\nconst statusUrl = v.public_base + '/status?id=' + v.lead_id;\nreturn [{ json: { problems, body: teamAlertEmail(v.lead, q, { from: $env.EMAIL_FROM_ALERTS || $env.EMAIL_FROM_LEADS, to: $env.TEAM_EMAIL, statusUrl, crm: { name: crm, saved: Boolean(contactId), contactUrl }, problems }) } }];"
       },
       "id": "d8363afa-81e4-46b0-a6f4-31bb4d49d2f4",
       "name": "Prepare team alert",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        7250,
+        7750,
         680
       ]
     },
@@ -916,7 +1062,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.5,
       "position": [
-        7500,
+        8000,
         680
       ],
       "retryOnFail": true,
@@ -941,7 +1087,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        7750,
+        8250,
         680
       ]
     },
@@ -967,7 +1113,7 @@
       "type": "n8n-nodes-base.dataTable",
       "typeVersion": 1.1,
       "position": [
-        8000,
+        8500,
         680
       ]
     },
@@ -982,7 +1128,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        8250,
+        8750,
         680
       ]
     },
@@ -1008,7 +1154,7 @@
       "type": "n8n-nodes-base.dataTable",
       "typeVersion": 1.1,
       "position": [
-        8500,
+        9000,
         680
       ]
     },
@@ -1042,7 +1188,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        8750,
+        9250,
         680
       ]
     },
@@ -1055,7 +1201,7 @@
       "type": "n8n-nodes-base.stopAndError",
       "typeVersion": 1,
       "position": [
-        9000,
+        9500,
         510
       ],
       "notes": "Marks the execution as failed so the Error Workflow alerts by its own route."
@@ -1306,6 +1452,24 @@
       "main": [
         [
           {
+            "node": "Zoho CRM?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zoho CRM?": {
+      "main": [
+        [
+          {
+            "node": "Zoho: upsert lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
             "node": "HubSpot: upsert contact",
             "type": "main",
             "index": 0
@@ -1314,6 +1478,24 @@
       ]
     },
     "HubSpot: upsert contact": {
+      "main": [
+        [
+          {
+            "node": "Record contact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zoho: upsert lead": {
       "main": [
         [
           {
@@ -1375,6 +1557,24 @@
       "main": [
         [
           {
+            "node": "Zoho note?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zoho note?": {
+      "main": [
+        [
+          {
+            "node": "Zoho: add note",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
             "node": "HubSpot: add note",
             "type": "main",
             "index": 0
@@ -1383,6 +1583,24 @@
       ]
     },
     "HubSpot: add note": {
+      "main": [
+        [
+          {
+            "node": "Record note",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Record note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Zoho: add note": {
       "main": [
         [
           {

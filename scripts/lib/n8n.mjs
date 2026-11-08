@@ -123,20 +123,42 @@ export class N8n {
     return ids;
   }
 
-  /** values: { gemini: {name, value}, hubspot: {...}, resend: {...} } (header name + value). Creates or updates by name. */
+  /**
+   * values: { gemini, hubspot, resend: {name, value} header credentials; zoho: null or
+   * { clientId, clientSecret, accessTokenUrl, refreshToken, accessToken } }. Creates or updates by name.
+   * Without Zoho values a placeholder credential is stored so the workflow still activates
+   * (the form then refuses the Zoho option, see ZOHO_ENABLED).
+   */
   async ensureCredentials(values) {
     const list = (await this.api("/credentials?limit=100")).data ?? [];
     const ids = {};
     for (const c of Object.values(CRED)) {
-      const v = values[c.key];
-      if (!v?.value) throw new Error(`missing value for credential "${c.name}"`);
-      const found = list.find((x) => x.name === c.name && x.type === "httpHeaderAuth");
-      const body = { name: c.name, type: "httpHeaderAuth", data: { name: v.name, value: v.value } };
+      const type = c.type || "httpHeaderAuth";
+      let data;
+      if (type === "oAuth2Api") {
+        const z = values[c.key] || { clientId: "not-configured", clientSecret: "not-configured", accessTokenUrl: "https://accounts.zoho.com/oauth/v2/token", refreshToken: "", accessToken: "" };
+        data = {
+          grantType: "authorizationCode",
+          authUrl: z.accessTokenUrl.replace(/\/token$/, "/auth"),
+          accessTokenUrl: z.accessTokenUrl,
+          clientId: z.clientId,
+          clientSecret: z.clientSecret,
+          scope: "ZohoCRM.modules.leads.ALL,ZohoCRM.modules.notes.ALL,ZohoCRM.org.READ",
+          authQueryParameters: "access_type=offline",
+          authentication: "body",
+          oauthTokenData: { access_token: z.accessToken || "expired", refresh_token: z.refreshToken, token_type: "Bearer", expires_in: 3600 },
+        };
+      } else {
+        const v = values[c.key];
+        if (!v?.value) throw new Error(`missing value for credential "${c.name}"`);
+        data = { name: v.name, value: v.value };
+      }
+      const found = list.find((x) => x.name === c.name && x.type === type);
       if (found) {
-        await this.api(`/credentials/${found.id}`, { method: "PATCH", body: { name: c.name, data: body.data } });
+        await this.api(`/credentials/${found.id}`, { method: "PATCH", body: { name: c.name, data } });
         ids[c.key] = found.id;
       } else {
-        ids[c.key] = (await this.api("/credentials", { method: "POST", body })).id;
+        ids[c.key] = (await this.api("/credentials", { method: "POST", body: { name: c.name, type, data } })).id;
       }
     }
     return ids;
@@ -213,6 +235,10 @@ export function pipelineEnv(cfg) {
     HUBSPOT_PORTAL_ID: cfg.hubspotPortalId ?? "",
     SIM_OUTAGE_URL: cfg.simOutageUrl,
     RETENTION_DAYS: String(cfg.retentionDays ?? 14),
+    ZOHO_ENABLED: cfg.zohoEnabled ? "true" : "false",
+    ZOHO_API_BASE: cfg.zohoApiBase || "https://www.zohoapis.com",
+    ZOHO_CRM_WEB: cfg.zohoCrmWeb || "https://crm.zoho.com",
+    ZOHO_ORG_ID: cfg.zohoOrgId || "",
     ...(cfg.geminiBase ? { GEMINI_BASE: cfg.geminiBase } : {}),
     ...(cfg.hubspotBase ? { HUBSPOT_BASE: cfg.hubspotBase } : {}),
     ...(cfg.resendBase ? { RESEND_BASE: cfg.resendBase } : {}),

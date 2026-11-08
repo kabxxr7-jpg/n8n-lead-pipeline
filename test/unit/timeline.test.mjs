@@ -11,6 +11,12 @@ const start = [
 ];
 
 describe("buildStatus", () => {
+  it("labels the CRM steps by the CRM picked", () => {
+    const z = buildStatus([{ ...start[0], detail: JSON.stringify({ crm: "zoho" }) }, start[1]], T0 + 1000);
+    expect(z.crm).toBe("zoho");
+    expect(z.steps.slice(3, 5).map((x) => x.label)).toEqual(["Zoho CRM lead", "Zoho CRM note"]);
+    expect(buildStatus(start, T0 + 1000).steps[3].label).toBe("HubSpot contact");
+  });
   it("returns null for no rows", () => expect(buildStatus([], T0)).toBeNull());
   it("marks the next step running while in progress", () => {
     const s = buildStatus(start, T0 + 1000);

@@ -40,6 +40,12 @@ describe("validateLead", () => {
     expect(r.kind).toBe("invalid");
     expect(Object.keys(r.fields)).toContain(field);
   });
+  it("CRM choice defaults to HubSpot and accepts Zoho only when connected", () => {
+    expect(validateLead(good(), NOW).lead.crm).toBe("hubspot");
+    expect(validateLead(good({ crm: "zoho" }), NOW, { zohoEnabled: true }).lead.crm).toBe("zoho");
+    expect(validateLead(good({ crm: "zoho" }), NOW, { zohoEnabled: false }).fields.crm).toMatch(/not connected/);
+    expect(validateLead(good({ crm: "salesforce" }), NOW).fields.crm).toMatch(/Unknown/);
+  });
   it("rejects non-objects", () => {
     for (const b of [null, [], "x", 3]) expect(validateLead(b, NOW).kind).toBe("invalid");
   });

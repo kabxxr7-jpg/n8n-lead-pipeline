@@ -42,6 +42,10 @@ export async function startStack() {
       geminiBase: `${mocks.base}/gemini`,
       hubspotBase: `${mocks.base}/hubspot`,
       resendBase: `${mocks.base}/resend`,
+      zohoEnabled: true,
+      zohoApiBase: `${mocks.base}/zoho`,
+      zohoCrmWeb: "https://crm.zoho.test",
+      zohoOrgId: "777",
     }),
   };
   const log = path.join(dataDir, "n8n.log");
@@ -64,6 +68,7 @@ export async function startStack() {
       gemini: { name: "x-goog-api-key", value: "test-gemini-key" },
       hubspot: { name: "Authorization", value: "Bearer test-hubspot-token" },
       resend: { name: "Authorization", value: "Bearer test-resend-key" },
+      zoho: { clientId: "zoho-client", clientSecret: "zoho-secret", accessTokenUrl: `${mocks.base}/zoho-accounts/oauth/v2/token`, refreshToken: "zoho-refresh-1", accessToken: "zoho-access-1-expired" },
     });
     const ids = await n8n.syncWorkflows(creds);
     return { n8n, ids, secrets, mocks, gatewayBase, log, stop };
