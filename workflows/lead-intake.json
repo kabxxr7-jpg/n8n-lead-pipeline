@@ -422,13 +422,13 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ ($env.GEMINI_BASE || 'https://generativelanguage.googleapis.com') + '/v1beta/models/' + ($env.GEMINI_MODEL || 'gemini-2.5-flash') + ':generateContent' }}",
+        "url": "={{ ($env.GEMINI_BASE || 'https://generativelanguage.googleapis.com') + '/v1beta/models/' + ($env.GEMINI_MODEL || 'gemini-3.5-flash') + ':generateContent' }}",
         "sendBody": true,
         "contentType": "json",
         "specifyBody": "json",
         "jsonBody": "={{ $json.request }}",
         "options": {
-          "timeout": 30000
+          "timeout": 20000
         },
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth"

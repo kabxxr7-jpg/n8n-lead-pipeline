@@ -181,9 +181,9 @@ return [
   f.code("Build AI request", js(["qualify.fn.js"], `return [{ json: { request: buildGeminiRequest(${V}.lead) } }];`), at(12, 5));
   f.http("Gemini: qualify lead", {
     method: "POST",
-    url: "={{ ($env.GEMINI_BASE || 'https://generativelanguage.googleapis.com') + '/v1beta/models/' + ($env.GEMINI_MODEL || 'gemini-2.5-flash') + ':generateContent' }}",
+    url: "={{ ($env.GEMINI_BASE || 'https://generativelanguage.googleapis.com') + '/v1beta/models/' + ($env.GEMINI_MODEL || 'gemini-3.5-flash') + ':generateContent' }}",
     json: "$json.request",
-    timeout: 30000,
+    timeout: 20000,
     pos: at(13, 5),
     node: { ...RETRY, onError: "continueErrorOutput", credentials: credRef(CRED.gemini), notes: "Structured output (JSON schema). 3 tries, 2 s apart." },
   });
