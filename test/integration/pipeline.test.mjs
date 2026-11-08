@@ -202,12 +202,22 @@ describe("retention", () => {
     const r = await s.n8n.runFromTrigger(cookie, s.ids["cleanup.json"], "Every day 03:00 UTC");
     expect(r.status).toBe(200);
     let gone = false;
-    for (let i = 0; i < 40 && !gone; i++) {
-      await sleep(250);
+    // the editor's run endpoint returns before the run ends; under load the delete can take a while
+    for (let i = 0; i < 60 && !gone; i++) {
+      await sleep(500);
       gone = (await status(id)).status === 404;
     }
+    if (!gone) {
+      const ex = await s.n8n.api(`/executions?workflowId=${s.ids["cleanup.json"]}&includeData=true&limit=3`);
+      console.log("CLEANUP DEBUG", JSON.stringify(ex.data.map((e) => ({ status: e.status, deleted: Object.fromEntries(Object.entries(e.data?.resultData?.runData || {}).map(([k, v]) => [k, v[0].data?.main?.[0]?.length])) }))));
+      const tables = (await s.n8n.api("/data-tables?limit=10")).data;
+      for (const t of tables) {
+        const rows = (await s.n8n.api(`/data-tables/${t.id}/rows?limit=250`)).data;
+        console.log("REMAINING", t.name, rows.length, JSON.stringify(rows.slice(0, 3).map((r) => [r.id, r.lead_id, r.step, r.createdAt])), "test lead", id);
+      }
+    }
     expect(gone).toBe(true);
-  }, 60_000);
+  }, 90_000);
 });
 
 describe("Zoho CRM instead of HubSpot", () => {

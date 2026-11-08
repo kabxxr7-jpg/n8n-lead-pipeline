@@ -12,6 +12,10 @@ describe("Gemini request", () => {
     expect(req.generationConfig.responseMimeType).toBe("application/json");
     expect(req.generationConfig.responseSchema.required).toEqual(["score", "tier", "reason", "next_step", "red_flags"]);
   });
+  it("leaves room for the answer after thinking (live run hit MAX_TOKENS at 1024)", () => {
+    expect(req.generationConfig.maxOutputTokens).toBeGreaterThanOrEqual(2048);
+    expect(req.generationConfig.thinkingConfig).toEqual({ thinkingLevel: "low" });
+  });
   it("sends the brief as data, without the person's name or full email", () => {
     const text = req.contents[0].parts[0].text;
     expect(text).toContain("brightlane.io");
@@ -42,6 +46,7 @@ describe("parseGeminiResponse", () => {
   });
   it("reports n8n error items", () => expect(Q.parseGeminiResponse({ error: { message: "503 overloaded" } }).problem).toMatch(/request failed: 503/));
   it("reports blocked prompts", () => expect(Q.parseGeminiResponse({ promptFeedback: { blockReason: "SAFETY" } }).problem).toMatch(/blocked: SAFETY/));
+  it("reports an answer cut off at the output limit", () => expect(Q.parseGeminiResponse(wrap('{"score": 4', {}).candidates ? { ...wrap('{"score": 4'), candidates: [{ content: { parts: [{ text: '{"score": 4' }] }, finishReason: "MAX_TOKENS" }] } : null).problem).toMatch(/MAX_TOKENS/));
   it("reports truncated JSON", () => expect(Q.parseGeminiResponse(wrap('{"score": 4', {})).problem).toMatch(/not valid JSON/));
   it("rejects the simulated broken answer", () => expect(Q.parseGeminiResponse(Q.simulatedBrokenAnswer()).ok).toBe(false));
 });

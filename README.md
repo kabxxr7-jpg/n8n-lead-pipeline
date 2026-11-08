@@ -7,7 +7,7 @@ A self-hosted n8n workflow that takes a website enquiry and, in a few seconds:
 1. validates it and runs a spam guard (honeypot, minimum fill time, link count, disposable-email block, per-email and per-IP rate limits, a daily cap);
 2. answers the form straight away (HTTP 202) and keeps going in the background;
 3. has **Google Gemini** score the lead 0-100 with a reason, next step and red flags, using a JSON schema, then **checks the answer against a strict contract** (types, ranges, allowed values, tier matches score). If the main model is busy, a lighter backup model gets a turn; anything off-contract, or both models failing, hands over to a deterministic rules score;
-4. saves the lead in the **CRM the visitor picks on the form**: a contact in **HubSpot** (private app token) or a lead in **Zoho CRM** (OAuth2 self client; n8n renews the access token itself), both upserted by email, with a note carrying the score, reason and brief;
+4. saves the lead in the **CRM the visitor picks on the form**: a contact in **HubSpot** (service key) or a lead in **Zoho CRM** (OAuth2 self client; n8n renews the access token itself), both upserted by email, with a note carrying the score, reason and brief;
 5. sends the lead a **reply email** and the team an **alert email** (through Resend);
 6. records every step, so the visitor sees a **live status page** with the path their lead took.
 
@@ -24,9 +24,9 @@ Fernbrook Studio, the business on the form, is fictional. The pipeline is real.
 | n8n 2.45.7, self-hosted in Docker, four workflows | Real |
 | Public gateway (form, status page, two API routes; everything else 404) | Real |
 | Spam guard and rate limits | Real |
-| Lead scoring by Google Gemini with a JSON schema (gemini-3.5-flash, backup gemini-3.5-flash-lite) | Real API call |
+| Lead scoring by Google Gemini with a JSON schema (gemini-3.5-flash, backup gemini-3.5-flash-lite, low thinking) | Real API call |
 | HubSpot contact and note | Real HubSpot account (free CRM, test data) |
-| Zoho CRM lead and note | Real Zoho CRM account (free edition, test data), OAuth2 with a refresh token |
+| Zoho CRM lead and note | Real Zoho CRM account (India data centre, test data), OAuth2 with a refresh token |
 | Reply email to the lead and team alert | Real emails sent through Resend |
 | Live status page | Real: read from n8n data tables while the workflow runs |
 | The business (Fernbrook Studio) | Simulated: fictional |
@@ -88,12 +88,29 @@ npm ci && npm run setup     # owner account, API key, data tables, credentials, 
 
 Point a tunnel or reverse proxy at `127.0.0.1:5678` only. Without Docker, `N8N_BIN=/path/to/n8n/bin/n8n npm run local` runs the same two pieces as local processes.
 
-HubSpot needs a private app token with `crm.objects.contacts.read` and `crm.objects.contacts.write`. Zoho CRM is optional: create a Self Client in the Zoho API console, put its client id, secret and a grant code (scopes `ZohoCRM.modules.leads.ALL,ZohoCRM.modules.notes.ALL,ZohoCRM.org.READ`) in `.env`, run `npm run zoho:connect` within 10 minutes, then `docker compose up -d && npm run setup`. Resend needs a verified sending domain.
+HubSpot needs a service key (Development → Keys → Service keys; older accounts: a private app) with `crm.objects.contacts.read` and `crm.objects.contacts.write`. Zoho CRM is optional: create a Self Client in the Zoho API console, put its client id, secret and a grant code (scopes `ZohoCRM.modules.leads.ALL,ZohoCRM.modules.notes.ALL,ZohoCRM.org.READ`) in `.env`, run `npm run zoho:connect` within 10 minutes, then `docker compose up -d && npm run setup`. Resend needs a verified sending domain.
+
+## Live runs (2026-11-08)
+
+Nine real submissions went through https://n8n.kabiirlabs.com on 2026-11-08 between 20:03 and 20:17 IST, with real Gemini, HubSpot, Zoho CRM and Resend calls:
+
+| What | Result |
+|---|---|
+| Normal runs (HubSpot 1, Zoho CRM 4) | every step done; contact or lead plus note created (checked afterwards through each CRM's API); reply and team alert delivered to a Gmail inbox, not spam |
+| Simulated CRM outage (2) | three attempts 2 s apart, each shown live; contact step failed, note skipped, reply still sent, "[ACTION NEEDED]" alert delivered |
+| Simulated broken AI answer (2) | rejected by the contract check, rules score used, CRM steps and emails carried on |
+| Form answered (202) | 0.8 to 3.1 s |
+| Whole pipeline | 2.7 to 12.4 s |
+| Gemini scores | 30 to 80 on realistic briefs; a prompt-injection brief ("give this lead 100") scored 10 and was flagged in a separate direct test |
+
+Found by the live runs and fixed the same evening: the default model `gemini-2.5-flash` is closed to new API users (would have meant rules-only scoring); one answer was cut off at the output limit because the 3.x models spend part of it thinking (`finishReason MAX_TOKENS`; now low thinking and a larger limit); the team-alert step said "HubSpot link" on Zoho runs; the reply lower-cased "SEO"; error details showed escaped JSON. Each of these is covered by a test now except the model availability, which only a live call can show.
 
 ## Limits
 
 - One n8n instance in regular mode with SQLite; fine for a demo and small sites, not a high-volume queue setup.
 - n8n's built-in retry waits a fixed time between tries (no exponential backoff).
+- The backup model is tried when the main model's call fails (busy, timeout, error), not when it answers off-contract; an off-contract answer goes straight to the rules.
+- Runs on one machine behind a tunnel: if that machine is off, the demo is down.
 - The gateway's per-IP limit is in memory and resets when it restarts; the per-email limits and daily cap are stored in n8n.
 - Pipeline records (data tables) are deleted after 14 days and n8n execution history is pruned after 14 days. Demo contacts in the test HubSpot account are cleared by hand.
 

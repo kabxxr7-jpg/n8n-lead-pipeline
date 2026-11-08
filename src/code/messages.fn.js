@@ -89,6 +89,14 @@ function hubspotNote(lead, q, { contactId, leadId, nowMs }) {
   };
 }
 
+const SERVICE_PHRASE = {
+  'New website': 'new website',
+  'Website redesign': 'website redesign',
+  'SEO & content': 'SEO and content',
+  'Automation & integrations': 'automation and integrations',
+  'Not sure yet': 'website',
+};
+
 const REPLY_BY_TIER = {
   hot: 'Your project looks like a strong fit. Someone from the team will email you within one business day to set up a 30-minute discovery call.',
   warm: 'Thanks for the details. We will send you a few short scoping questions within two business days so we can come back with a clear estimate.',
@@ -104,7 +112,7 @@ function leadReplyEmail(lead, q, { from, statusUrl, leadId }) {
   const lines = [
     `Hi ${first},`,
     '',
-    `Thanks for telling us about ${oneLine(lead.company, 120)}'s ${lead.service.toLowerCase()} project.`,
+    `Thanks for telling us about the ${SERVICE_PHRASE[lead.service] || 'web'} project at ${oneLine(lead.company, 120)}.`,
     '',
     REPLY_BY_TIER[q.tier],
     '',
@@ -118,7 +126,7 @@ function leadReplyEmail(lead, q, { from, statusUrl, leadId }) {
   const html = [
     '<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:15px;line-height:1.55;color:#1f2933;max-width:560px">',
     `<p>Hi ${escapeHtml(first)},</p>`,
-    `<p>Thanks for telling us about ${escapeHtml(lead.company)}'s ${escapeHtml(lead.service.toLowerCase())} project.</p>`,
+    `<p>Thanks for telling us about the ${escapeHtml(SERVICE_PHRASE[lead.service] || 'web')} project at ${escapeHtml(lead.company)}.</p>`,
     `<p>${escapeHtml(REPLY_BY_TIER[q.tier])}</p>`,
     `<p><a href="${escapeHtml(statusUrl)}" style="color:#2f6f4f">See what happened to your enquiry, step by step</a></p>`,
     '<p>Fernbrook Studio (demo)</p>',

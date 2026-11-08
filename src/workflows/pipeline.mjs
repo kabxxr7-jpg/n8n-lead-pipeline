@@ -51,10 +51,54 @@ function event(lead_id, step, state, summary, detail) {
 }
 function errorText(e) {
   if (!e) return 'unknown error';
-  if (typeof e === 'string') return e.slice(0, 200);
-  const parts = [e.message, e.description].filter(Boolean).map(String);
-  return (parts.join(': ') || JSON.stringify(e)).replace(/\\s+/g, ' ').slice(0, 200);
+  let t = typeof e === 'string' ? e : [e.message, e.description].filter(Boolean).map(String).join(': ') || JSON.stringify(e);
+  // n8n reports HTTP errors as: 503 - "{\\"message\\":\\"...\\"}"  -> HTTP 503: ...
+  const m = t.match(/^(\\d{3}) - "?([\\s\\S]*?)"?$/);
+  if (m) {
+    let inner = m[2].replace(/\\\\"/g, '"');
+    try { const j = JSON.parse(inner); inner = j.message || j.error_description || j.code || inner; } catch {}
+    t = 'HTTP ' + m[1] + ': ' + inner;
+  }
+  return t.replace(/\\s+/g, ' ').slice(0, 200);
 }`;
+
+
+// Readable canvas: four rows, one per stage, each with a sticky-note header. Positions only.
+const ROWS = [
+  ["1 · Receive, validate, spam guard, rate limits, answer the form (202)", 7, [
+    ["Lead form", 0, 0], ["Validate & spam guard", 1, 0], ["Spam?", 2, 0], ["Reject: spam", 3, -1], ["Valid?", 3, 0], ["Reject: invalid", 4, -1],
+    ["Find recent leads", 4, 0], ["Check limits", 5, 0], ["Within limits?", 6, 0], ["Reject: limit", 7, -1], ["Save lead", 7, 0],
+    ["Event: received", 8, 0], ["Log: received", 9, 0], ["Accepted (202)", 10, 0]]],
+  ["2 · AI qualification (Gemini, JSON schema, contract check, backup model, rules fallback) and the CRM record", 4, [
+    ["Simulate broken AI?", 0, 0], ["Simulated AI answer", 1, -1], ["Build AI request", 1, 0], ["Gemini: qualify lead", 2, 0], ["Gemini: backup model", 3, 1],
+    ["Check AI answer", 4, 0], ["Log: qualified", 5, 0], ["Prepare contact", 6, 0], ["Zoho CRM?", 7, 0], ["Zoho: upsert lead", 8, -1], ["HubSpot: upsert contact", 8, 1],
+    ["Record contact", 9, 0], ["Log: contact", 10, 0]]],
+  ["3 · CRM note (skipped if the record failed) and the reply to the lead", 6, [
+    ["Contact saved?", 0, 0], ["Prepare note", 1, -1], ["Zoho note?", 2, -1], ["Zoho: add note", 3, -2], ["HubSpot: add note", 3, 0], ["Record note", 4, -1], ["Skip note", 4, 1],
+    ["Log: note", 5, 0], ["Prepare reply", 6, 0], ["Resend: reply to lead", 7, 0], ["Record reply", 8, 0], ["Log: reply", 9, 0]]],
+  ["4 · Team alert (urgent if anything failed), outcome, and a failed run hands over to the Error Workflow", 3, [
+    ["Prepare team alert", 0, 0], ["Resend: team alert", 1, 0], ["Record alert", 2, 0], ["Log: alert", 3, 0], ["Finish", 4, 0], ["Log: done", 5, 0], ["Alert failed?", 6, 0], ["Fail execution", 7, 0]]],
+];
+function applyLayout(f) {
+  const COL = 230, ROW_GAP = 760, LANE = 150;
+  ROWS.forEach(([title, color, cells], r) => {
+    const y0 = r * ROW_GAP + (r >= 2 ? LANE : 0);
+    for (const [name, col, lane] of cells) {
+      const n = f.nodes.find((x) => x.name === name);
+      if (!n) throw new Error(`layout: no node ${name}`);
+      n.position = [col * COL, y0 + lane * LANE];
+    }
+    const maxCol = Math.max(...cells.map((c) => c[1]));
+    const minLane = Math.min(...cells.map((c) => c[2]));
+    const maxLane = Math.max(...cells.map((c) => c[2]));
+    f.add(`Note: stage ${r + 1}`, "n8n-nodes-base.stickyNote", 1,
+      { content: `## ${title}`, height: (maxLane - minLane) * LANE + 260, width: maxCol * COL + 220, color },
+      [-80, y0 + minLane * LANE - 150]);
+  });
+  const placed = new Set(ROWS.flatMap((r) => r[2].map((c) => c[0])));
+  const missing = f.nodes.filter((n) => n.type !== "n8n-nodes-base.stickyNote" && !placed.has(n.name)).map((n) => n.name);
+  if (missing.length) throw new Error(`layout: not placed: ${missing.join(", ")}`);
+}
 
 // ------------------------------------------------------------------ intake
 
@@ -414,7 +458,7 @@ const problems = $('Prepare team alert').first().json.problems;
 if (res.error || !res.id) return [event(v.lead_id, 'team_alert', 'failed', 'The team alert could not be sent: ' + errorText(res.error || 'no id returned'), { error: errorText(res.error || 'no id') })];
 const summary = problems.length
   ? 'Urgent alert sent to the team: ' + problems.join('; ') + '. Nothing is lost: the alert carries the full lead.'
-  : 'The team was emailed the lead, its score and the HubSpot link.';
+  : 'The team was emailed the lead, its score and the ' + ($('Prepare contact').first().json.crm === 'zoho' ? 'Zoho CRM' : 'HubSpot') + ' link.';
 return [event(v.lead_id, 'team_alert', 'ok', summary, { email_id: res.id, urgent: problems.length > 0, problems })];`),
     at(33, 4),
   );
@@ -492,6 +536,7 @@ return [event(v.lead_id, 'done', outcome === 'failed' ? 'failed' : 'ok', summary
   f.connect("Finish", "Log: done");
   f.connect("Log: done", "Alert failed?");
   f.connect("Alert failed?", "Fail execution", 0);
+  applyLayout(f);
   return f;
 }
 

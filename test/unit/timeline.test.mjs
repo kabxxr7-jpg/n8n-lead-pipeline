@@ -43,6 +43,7 @@ describe("buildStatus", () => {
     const after = buildStatus([...base, ev(7, "crm_contact", "retrying", "HTTP 503"), ev(7, "crm_contact", "failed", "gave up", { attempts: 3 })], T0 + 8000);
     expect(after.steps[3].state).toBe("failed");
     expect(after.steps[3].detail.attempts).toHaveLength(3);
+    expect(after.steps[3].detail.attempts[0]).toBe("Attempt 1 at 12:00:03 UTC: HTTP 503");
     expect(after.steps[4].state).toBe("running");
   });
   it("shows the fallback reason", () => {

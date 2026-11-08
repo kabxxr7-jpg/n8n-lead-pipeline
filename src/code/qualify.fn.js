@@ -48,7 +48,10 @@ function buildGeminiRequest(lead) {
     contents: [{ role: 'user', parts: [{ text: 'Qualify this lead. Lead data as JSON:\n' + JSON.stringify(data, null, 2) }] }],
     generationConfig: {
       temperature: 0.2,
-      maxOutputTokens: 1024,
+      // 3.x models think before answering and that counts against this budget; keep thinking low
+      // and leave room, or the JSON gets cut off (seen live: finishReason MAX_TOKENS at 1024).
+      maxOutputTokens: 4096,
+      thinkingConfig: { thinkingLevel: 'low' },
       responseMimeType: 'application/json',
       responseSchema: QUALIFY_SCHEMA,
     },

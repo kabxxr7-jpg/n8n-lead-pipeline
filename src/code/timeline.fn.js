@@ -23,6 +23,10 @@ function parseDetail(s) {
   }
 }
 
+function attemptLine(r, i) {
+  return `Attempt ${i + 1} at ${String(r.createdAt).slice(11, 19)} UTC: ${r.summary}`;
+}
+
 function buildStatus(rows, nowMs) {
   const events = (rows || [])
     .filter((r) => r && r.step && r.createdAt)
@@ -57,7 +61,7 @@ function buildStatus(rows, nowMs) {
         return {
           key, label, state: finished || stalled ? 'failed' : 'running', at: lastTry.createdAt,
           summary: `Attempt ${retries.length} failed (${lastTry.summary}). Retrying…`,
-          detail: { attempts: retries.map((r, i) => ({ attempt: i + 1, at: r.createdAt, result: r.summary })) },
+          detail: { attempts: retries.map((r, i) => attemptLine(r, i)) },
         };
       }
       const state = !finished && !stalled && !runningAssigned ? 'running' : finished ? 'skipped' : 'pending';
@@ -66,7 +70,7 @@ function buildStatus(rows, nowMs) {
     }
     let detail = parseDetail(final.detail);
     if (retries.length) {
-      detail = { ...(detail || {}), attempts: retries.map((r, i) => ({ attempt: i + 1, at: r.createdAt, result: r.summary })) };
+      detail = { ...(detail || {}), attempts: retries.map((r, i) => attemptLine(r, i)) };
     }
     if (key === 'qualified' && detail) {
       qualification = {

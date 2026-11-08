@@ -28,6 +28,9 @@ describe("lead reply", () => {
     expect(e.text).toContain("https://x.example/status?id=1");
     expect(e.text).toMatch(/fictional business/);
   });
+  it("names the service naturally (no lower-cased acronyms)", () => {
+    expect(M.leadReplyEmail({ ...lead, service: "SEO & content" }, q, { from: "f", statusUrl: "s", leadId: "1" }).text).toContain("the SEO and content project at Bright & Co.");
+  });
   it("escapes HTML and keeps the subject on one line", () => {
     expect(e.html).not.toContain("<b>");
     expect(e.html).toContain("Bright &amp; Co");
