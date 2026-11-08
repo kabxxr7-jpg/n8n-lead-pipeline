@@ -1,0 +1,24 @@
+{
+  "name": "n8n-lead-pipeline",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Live n8n lead pipeline: web form, spam guard, AI lead scoring with a schema check, HubSpot contact and note, email reply, team alert, error branch, live status page",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "vitest run test/unit",
+    "test:integration": "vitest run test/integration",
+    "build:workflows": "node scripts/build-workflows.mjs",
+    "check:workflows": "node scripts/build-workflows.mjs --check",
+    "gateway": "node gateway/server.mjs",
+    "setup": "node scripts/setup.mjs",
+    "scan": "node scripts/secret-scan.mjs",
+    "local": "node scripts/run-local.mjs"
+  },
+  "devDependencies": {
+    "vitest": "5.0.5"
+  }
+}

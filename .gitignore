@@ -1,0 +1,7 @@
+.env
+.n8n-data/
+.n8n-owner.json
+node_modules/
+.DS_Store
+LEDGER.md
+portfolio/

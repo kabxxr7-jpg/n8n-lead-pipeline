@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Start a project · Fernbrook Studio (demo)</title>
+  <meta name="description" content="Live demo of an automated lead pipeline: a project enquiry form for Fernbrook Studio, a fictional web design studio.">
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/form.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#lead-form">Skip to the form</a>
+
+  <div class="demo-banner" role="note" aria-label="Demo notice">
+    <div class="demo-banner__inner">
+      <span class="demo-banner__tag">Live demo</span>
+      <span>Fernbrook Studio is a fictional business. Your submission really runs through an n8n workflow: AI lead scoring (Google Gemini), a HubSpot CRM (free test account) and a real email reply to the address you enter.</span>
+    </div>
+  </div>
+
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="Fernbrook Studio, fictional demo business, home">
+      <span class="brand__mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M12 21V7M12 11c-2.5-.8-4.2-2.5-5-5M12 11c2.5-.8 4.2-2.5 5-5M12 16c-2.5-.8-4.2-1.8-5.6-4.2M12 16c2.5-.8 4.2-1.8 5.6-4.2"/></svg>
+      </span>
+      <span>Fernbrook Studio <span class="brand__sub">(fictional)</span></span>
+    </a>
+    <span class="header-note">Websites · SEO · Automation</span>
+  </header>
+
+  <main class="page">
+    <div class="layout">
+      <section class="layout__aside" aria-labelledby="intro-title">
+        <span class="eyebrow">Start a project</span>
+        <h1 id="intro-title">Tell us about your project</h1>
+        <p class="lede">A few details are all we need. You'll get a personal reply by email, and you can watch your enquiry move through our pipeline in real time.</p>
+
+        <div class="card pipeline">
+          <h2 class="pipeline__title">What happens when you press Send</h2>
+          <ol class="pipeline__list">
+            <li class="pipeline__item">
+              <span class="pipeline__name">Validate &amp; spam guard
+                <span class="pipeline__desc">Required fields, email shape, honeypot, timing and rate limits.</span></span>
+            </li>
+            <li class="pipeline__item">
+              <span class="pipeline__name">AI qualifies the lead
+                <span class="pipeline__desc">Google Gemini scores fit and urgency, checked against a strict schema.</span></span>
+            </li>
+            <li class="pipeline__item">
+              <span class="pipeline__name">HubSpot contact + note
+                <span class="pipeline__desc">Contact upserted in the CRM with the score and your message attached.</span></span>
+            </li>
+            <li class="pipeline__item">
+              <span class="pipeline__name">Email reply + team alert
+                <span class="pipeline__desc">You get a reply; the team is notified with the lead's tier.</span></span>
+            </li>
+            <li class="pipeline__item">
+              <span class="pipeline__name">Live status page
+                <span class="pipeline__desc">Follow every step, with timings and details, as it happens.</span></span>
+            </li>
+          </ol>
+        </div>
+
+        <ul class="trust-list" aria-label="Services used in this demo">
+          <li>n8n (self-hosted)</li>
+          <li>Google Gemini</li>
+          <li>HubSpot CRM</li>
+          <li>Resend email</li>
+        </ul>
+      </section>
+
+      <section class="card form-card" aria-labelledby="form-title">
+        <div class="form-card__head">
+          <h2 id="form-title">Project enquiry</h2>
+          <p>Fields marked <span class="req" aria-hidden="true">*</span><span class="visually-hidden">with an asterisk</span> are required. Takes about a minute.</p>
+        </div>
+
+        <div id="form-alert" class="alert" role="alert" aria-live="assertive" tabindex="-1"></div>
+
+        <form id="lead-form" action="/api/lead" method="post" novalidate>
+          <div class="grid-2">
+            <div class="field" data-field="name">
+              <label for="f-name">Name<span class="req" aria-hidden="true">*</span></label>
+              <input class="input" id="f-name" name="name" type="text" autocomplete="name" required maxlength="120" aria-describedby="e-name">
+              <div class="field-error" id="e-name" aria-live="polite"></div>
+            </div>
+            <div class="field" data-field="email">
+              <label for="f-email">Work email<span class="req" aria-hidden="true">*</span></label>
+              <input class="input" id="f-email" name="email" type="email" autocomplete="email" inputmode="email" required maxlength="200" placeholder="you@company.com" aria-describedby="e-email">
+              <div class="field-error" id="e-email" aria-live="polite"></div>
+            </div>
+          </div>
+
+          <div class="grid-2">
+            <div class="field" data-field="company">
+              <label for="f-company">Company<span class="req" aria-hidden="true">*</span></label>
+              <input class="input" id="f-company" name="company" type="text" autocomplete="organization" required maxlength="160" aria-describedby="e-company">
+              <div class="field-error" id="e-company" aria-live="polite"></div>
+            </div>
+            <div class="field" data-field="website">
+              <label for="f-website">Website<span class="opt">(optional)</span></label>
+              <input class="input" id="f-website" name="website" type="text" inputmode="url" autocomplete="url" maxlength="200" placeholder="example.com" aria-describedby="e-website">
+              <div class="field-error" id="e-website" aria-live="polite"></div>
+            </div>
+          </div>
+
+          <div class="field" data-field="service">
+            <label for="f-service">What do you need?<span class="req" aria-hidden="true">*</span></label>
+            <select class="select" id="f-service" name="service" required aria-describedby="e-service">
+              <option value="New website">New website</option>
+              <option value="Website redesign">Website redesign</option>
+              <option value="SEO &amp; content">SEO &amp; content</option>
+              <option value="Automation &amp; integrations">Automation &amp; integrations</option>
+              <option value="Not sure yet">Not sure yet</option>
+            </select>
+            <div class="field-error" id="e-service" aria-live="polite"></div>
+          </div>
+
+          <div class="grid-2">
+            <div class="field" data-field="budget">
+              <label for="f-budget">Budget<span class="req" aria-hidden="true">*</span></label>
+              <select class="select" id="f-budget" name="budget" required aria-describedby="e-budget">
+                <option value="Under $2k">Under $2k</option>
+                <option value="$2k–5k" selected>$2k–5k</option>
+                <option value="$5k–15k">$5k–15k</option>
+                <option value="$15k–50k">$15k–50k</option>
+                <option value="$50k+">$50k+</option>
+              </select>
+              <div class="field-error" id="e-budget" aria-live="polite"></div>
+            </div>
+            <div class="field" data-field="timeline">
+              <label for="f-timeline">Timeline<span class="req" aria-hidden="true">*</span></label>
+              <select class="select" id="f-timeline" name="timeline" required aria-describedby="e-timeline">
+                <option value="As soon as possible">As soon as possible</option>
+                <option value="Within 1 month">Within 1 month</option>
+                <option value="1–3 months" selected>1–3 months</option>
+                <option value="3+ months">3+ months</option>
+                <option value="Just exploring">Just exploring</option>
+              </select>
+              <div class="field-error" id="e-timeline" aria-live="polite"></div>
+            </div>
+          </div>
+
+          <div class="field" data-field="message">
+            <label for="f-message">Tell us about the project<span class="req" aria-hidden="true">*</span></label>
+            <textarea class="textarea" id="f-message" name="message" required minlength="20" maxlength="1500" rows="5" placeholder="What are you hoping to achieve? Any links, deadlines or constraints we should know about?" aria-describedby="message-hint e-message"></textarea>
+            <div class="field-meta">
+              <span id="message-hint">20 to 1500 characters.</span>
+              <span id="message-counter" class="counter" aria-live="polite" aria-atomic="true">0 / 1500</span>
+            </div>
+            <div class="field-error" id="e-message" aria-live="polite"></div>
+          </div>
+
+          <!-- Honeypot: hidden from humans, left empty by real visitors -->
+          <div class="hp-field" aria-hidden="true">
+            <label for="f-fax">Fax (leave empty)</label>
+            <input id="f-fax" name="fax" type="text" tabindex="-1" autocomplete="off" value="">
+          </div>
+
+          <details class="simulate" id="simulate-box">
+            <summary>Try the failure path <span class="sim-tag">Simulated</span></summary>
+            <div class="simulate__body">
+              <p>Curious how the workflow copes when something breaks? Pick a simulated failure. Everything else still runs for real.</p>
+              <fieldset>
+                <legend class="visually-hidden">Simulated failure (optional)</legend>
+                <label class="radio">
+                  <input type="radio" name="simulate" value="none" checked>
+                  <span><strong>Normal run</strong><span>No simulated failure.</span></span>
+                </label>
+                <label class="radio">
+                  <input type="radio" name="simulate" value="crm_outage">
+                  <span><strong>Simulated: CRM outage</strong><span>HubSpot is down: watch the retries, the team alert and the lead still getting a reply.</span></span>
+                </label>
+                <label class="radio">
+                  <input type="radio" name="simulate" value="ai_invalid">
+                  <span><strong>Simulated: invalid AI output</strong><span>The AI returns broken JSON: watch the schema check reject it and the rules-based fallback take over.</span></span>
+                </label>
+              </fieldset>
+            </div>
+          </details>
+
+          <div class="field" data-field="consent">
+            <label class="check" for="f-consent">
+              <input id="f-consent" name="consent" type="checkbox" required aria-describedby="e-consent">
+              <span>I agree to my details being processed for this demo and to receive one email reply.<span class="req" aria-hidden="true">*</span></span>
+            </label>
+            <div class="field-error" id="e-consent" aria-live="polite"></div>
+          </div>
+
+          <p class="privacy-note">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+            <span>Use an email you can check. We store your submission in a test CRM and delete demo data regularly. No marketing.</span>
+          </p>
+
+          <div class="actions">
+            <button class="btn btn-primary btn-block" id="submit-btn" type="submit">
+              <span class="spinner" aria-hidden="true"></span>
+              <span class="btn-label">Send enquiry</span>
+            </button>
+          </div>
+          <p id="sending-status" class="visually-hidden" aria-live="polite"></p>
+        </form>
+      </section>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <span>Fernbrook Studio is fictional. Demo built by <a href="https://kabiirlabs.com" rel="noopener">Kabiir Labs</a></span>
+      <span>Demo data is deleted regularly.</span>
+    </div>
+  </footer>
+</body>
+</html>

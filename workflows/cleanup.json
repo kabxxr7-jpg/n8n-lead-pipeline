@@ -1,0 +1,125 @@
+{
+  "name": "Lead pipeline: cleanup",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 3 * * *"
+            }
+          ]
+        }
+      },
+      "id": "e92eaab7-5306-4493-aaa3-041bd5fde8ae",
+      "name": "Every day 03:00 UTC",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        170
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "deleteRows",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "lead_events"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "createdAt",
+              "condition": "lt",
+              "keyValue": "={{ $now.minus({ days: Number($env.RETENTION_DAYS || 14) }).toUTC().toISO() }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "43b1890e-df92-449a-a4b2-e8a592cc9aed",
+      "name": "Delete old events",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        250,
+        170
+      ],
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "notes": "Pipeline records older than RETENTION_DAYS (default 14)."
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "deleteRows",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "pipeline_leads"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "createdAt",
+              "condition": "lt",
+              "keyValue": "={{ $now.minus({ days: Number($env.RETENTION_DAYS || 14) }).toUTC().toISO() }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "041bac3b-c4da-4f26-a822-1bf13d158ddb",
+      "name": "Delete old leads",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        500,
+        170
+      ],
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "notes": "Pipeline records older than RETENTION_DAYS (default 14)."
+    }
+  ],
+  "connections": {
+    "Every day 03:00 UTC": {
+      "main": [
+        [
+          {
+            "node": "Delete old events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete old events": {
+      "main": [
+        [
+          {
+            "node": "Delete old leads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "__ERROR_WORKFLOW_ID__"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "lead-pipeline"
+  },
+  "active": false
+}

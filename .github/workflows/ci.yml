@@ -1,0 +1,26 @@
+name: ci
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run check:workflows
+      - run: npm test
+      - name: Install n8n 2.45.7 for the end-to-end tests
+        run: |
+          mkdir -p /tmp/n8n && cd /tmp/n8n && npm init -y >/dev/null
+          npm install --no-audit --no-fund --ignore-scripts n8n@2.45.7
+          npm rebuild sqlite3
+      - run: npm run test:integration
+        env:
+          N8N_BIN: /tmp/n8n/node_modules/n8n/bin/n8n

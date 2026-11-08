@@ -1,0 +1,180 @@
+{
+  "name": "Lead pipeline: simulated CRM outage",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "sim-crm-outage",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "04ec2047-9ccc-4532-a517-a147fbde5680",
+      "name": "Fake HubSpot",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        170
+      ],
+      "webhookId": "b03ab885-0d6c-411c-a608-d7480c0a5d80",
+      "notes": "Internal only. The gateway never forwards this path."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "91082f04-d813-4b05-a7e8-8dedd3919e52",
+              "leftValue": "={{ /^[0-9a-f-]{36}$/.test(String($json.query.lead_id || '')) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c79028f2-49c9-4c8b-abba-c9ee3bc94997",
+      "name": "Valid id?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        250,
+        170
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "function event(lead_id, step, state, summary, detail) {\n  return { json: { lead_id, step, state, summary: String(summary).slice(0, 300), detail: detail === undefined ? '' : JSON.stringify(detail) } };\n}\nfunction errorText(e) {\n  if (!e) return 'unknown error';\n  if (typeof e === 'string') return e.slice(0, 200);\n  const parts = [e.message, e.description].filter(Boolean).map(String);\n  return (parts.join(': ') || JSON.stringify(e)).replace(/\\s+/g, ' ').slice(0, 200);\n}\nreturn [event($input.first().json.query.lead_id, 'crm_contact', 'retrying', 'HTTP 503 from the simulated HubSpot outage')];"
+      },
+      "id": "1a4a56f7-f3c8-4215-ab1d-f5c3a6192b53",
+      "name": "Event: attempt failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "lead_events"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "1dca9c3e-4a77-447f-aa5e-a95dc67ea72b",
+      "name": "Log: attempt",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        750,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ ({ status: 'error', message: 'Simulated outage: service unavailable' }) }}",
+        "options": {
+          "responseCode": 503
+        }
+      },
+      "id": "5c02db30-46b7-43de-a4f8-2bd048c2ee43",
+      "name": "Outage (503)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1000,
+        170
+      ]
+    }
+  ],
+  "connections": {
+    "Fake HubSpot": {
+      "main": [
+        [
+          {
+            "node": "Valid id?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid id?": {
+      "main": [
+        [
+          {
+            "node": "Event: attempt failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Outage (503)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Event: attempt failed": {
+      "main": [
+        [
+          {
+            "node": "Log: attempt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log: attempt": {
+      "main": [
+        [
+          {
+            "node": "Outage (503)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "none",
+    "saveManualExecutions": false
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "lead-pipeline"
+  },
+  "active": false
+}

@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Live lead status · Fernbrook Studio (demo)</title>
+  <meta name="description" content="Watch an enquiry move through an automated n8n lead pipeline, step by step.">
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/status.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <div class="demo-banner" role="note" aria-label="Demo notice">
+    <div class="demo-banner__inner">
+      <span class="demo-banner__tag">Live demo</span>
+      <span>Fernbrook Studio is a fictional business. Your submission really runs through an n8n workflow: AI lead scoring (Google Gemini), a HubSpot CRM (free test account) and a real email reply to the address you enter.</span>
+    </div>
+  </div>
+
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="Fernbrook Studio, fictional demo business, home">
+      <span class="brand__mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M12 21V7M12 11c-2.5-.8-4.2-2.5-5-5M12 11c2.5-.8 4.2-2.5 5-5M12 16c-2.5-.8-4.2-1.8-5.6-4.2M12 16c2.5-.8 4.2-1.8 5.6-4.2"/></svg>
+      </span>
+      <span>Fernbrook Studio <span class="brand__sub">(fictional)</span></span>
+    </a>
+    <span class="header-note">Lead pipeline · live view</span>
+  </header>
+
+  <main class="page" id="main">
+    <!-- Loading / not found / error state -->
+    <section id="state-msg" class="card empty-state" aria-live="polite">
+      <h1 id="state-title">Loading your submission…</h1>
+      <p id="state-text">Connecting to the pipeline.</p>
+      <a id="state-link" class="btn btn-secondary hidden" href="/">Back to the form</a>
+    </section>
+
+    <div id="status-view" class="hidden">
+      <div class="status-head">
+        <div>
+          <span class="eyebrow">Live pipeline status</span>
+          <h1 id="status-title">Your enquiry is on its way</h1>
+          <p id="status-sub">Each step updates live as the n8n workflow runs.</p>
+          <div class="chips" id="chips"></div>
+        </div>
+        <span class="live-pill is-live" id="live-pill"><span class="live-pill__dot" aria-hidden="true"></span><span id="live-text">Live</span></span>
+      </div>
+
+      <p id="announcer" class="visually-hidden" aria-live="polite" aria-atomic="true"></p>
+
+      <div class="status-grid">
+        <div>
+          <section id="outcome" class="card outcome hidden fade-in" aria-labelledby="outcome-title" tabindex="-1">
+            <h2 id="outcome-title"></h2>
+            <p id="outcome-text"></p>
+            <p id="outcome-inbox">Check your inbox for the reply from Fernbrook Studio (demo).</p>
+            <div class="actions">
+              <a class="btn btn-primary" href="/">Send another</a>
+            </div>
+          </section>
+
+          <section class="card timeline-card" aria-labelledby="timeline-title">
+            <h2 id="timeline-title">Pipeline steps <span id="elapsed"></span></h2>
+            <ol class="timeline" id="timeline"></ol>
+          </section>
+        </div>
+
+        <aside class="status-side" aria-label="Lead summary">
+          <section id="score-card" class="card" aria-labelledby="score-title" aria-live="polite">
+            <h2 id="score-title" class="visually-hidden">Lead score</h2>
+            <div class="score-skeleton" id="score-wait">
+              <span class="score-skeleton__ring" aria-hidden="true"></span>
+              <span>Waiting for the AI to qualify this lead…</span>
+            </div>
+            <div class="score-card hidden" id="score-body">
+              <div class="score-card__top">
+                <div class="score-ring" id="score-ring">
+                  <span class="score-num"><span id="score-num">0</span><small>/ 100</small></span>
+                </div>
+                <div>
+                  <div class="score-card__label">Lead score</div>
+                  <span class="tier-pill" id="tier-pill"></span>
+                </div>
+              </div>
+              <p class="score-card__reason" id="score-reason"></p>
+              <p class="score-card__by" id="score-by"></p>
+            </div>
+          </section>
+
+          <section class="card lead-box" aria-labelledby="lead-title">
+            <h2 id="lead-title">Submission</h2>
+            <dl>
+              <dt>Name</dt><dd id="lead-name">–</dd>
+              <dt>Company</dt><dd id="lead-company">–</dd>
+              <dt>Email</dt><dd id="lead-email">–</dd>
+              <dt>Lead ID</dt><dd id="lead-id" class="status-meta">–</dd>
+            </dl>
+          </section>
+
+          <section class="card real-box" aria-labelledby="real-title">
+            <h2 id="real-title">What's real here</h2>
+            <h3>Real</h3>
+            <ul>
+              <li>n8n workflow (self-hosted)</li>
+              <li>Google Gemini call</li>
+              <li>HubSpot free CRM account</li>
+              <li>Email sent through Resend</li>
+            </ul>
+            <h3>Simulated</h3>
+            <ul class="sim-list">
+              <li>The business (Fernbrook Studio is fictional)</li>
+              <li>The failure, if you chose one</li>
+            </ul>
+          </section>
+        </aside>
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="site-footer__inner">
+      <span>Fernbrook Studio is fictional. Demo built by <a href="https://kabiirlabs.com" rel="noopener">Kabiir Labs</a></span>
+      <span>Demo data is deleted regularly.</span>
+    </div>
+  </footer>
+</body>
+</html>

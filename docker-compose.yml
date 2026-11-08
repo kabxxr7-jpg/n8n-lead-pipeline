@@ -1,0 +1,72 @@
+# Two containers. Only the gateway is meant to be reachable from the internet (through the tunnel,
+# which points at 127.0.0.1:5678). The n8n editor and API are bound to this machine only (5680).
+name: lead-pipeline
+
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:2.45.7
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5680:5678"   # editor + REST API, loopback only
+    volumes:
+      - n8n_data:/home/node/.n8n
+    environment:
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
+      N8N_HOST: 127.0.0.1
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: http
+      N8N_EDITOR_BASE_URL: http://127.0.0.1:5680
+      WEBHOOK_URL: http://127.0.0.1:5680/
+      N8N_SECURE_COOKIE: "false"          # the editor is only served over http on loopback
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+      N8N_TEMPLATES_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_HIRING_BANNER_ENABLED: "false"
+      N8N_DYNAMIC_BANNERS_ENABLED: "false"
+      N8N_AI_ENABLED: "false"
+      N8N_COMMUNITY_PACKAGES_ENABLED: "false"
+      N8N_PUBLIC_API_SWAGGERUI_DISABLED: "true"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"  # Code nodes read the settings below
+      NODE_FUNCTION_ALLOW_BUILTIN: crypto
+      N8N_RUNNERS_MODE: internal
+      GENERIC_TIMEZONE: UTC
+      TZ: UTC
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: "336"       # keep execution history 14 days
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      EMAIL_FROM_LEADS: ${EMAIL_FROM_LEADS}
+      EMAIL_FROM_ALERTS: ${EMAIL_FROM_ALERTS}
+      TEAM_EMAIL: ${TEAM_EMAIL}
+      DAILY_LEAD_CAP: ${DAILY_LEAD_CAP:-150}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      HUBSPOT_PORTAL_ID: ${HUBSPOT_PORTAL_ID:-}
+      SIM_OUTAGE_URL: http://127.0.0.1:5678/webhook/sim-crm-outage
+      RETENTION_DAYS: "14"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5678/healthz/readiness || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  gateway:
+    image: node:24-alpine
+    restart: unless-stopped
+    user: node
+    read_only: true
+    command: ["node", "/app/server.mjs"]
+    working_dir: /app
+    volumes:
+      - ./gateway:/app:ro
+    ports:
+      - "127.0.0.1:5678:5678"   # the only port the tunnel points at
+    environment:
+      GATEWAY_HOST: 0.0.0.0
+      GATEWAY_PORT: "5678"
+      N8N_INTERNAL_URL: http://n8n:5678
+    depends_on:
+      n8n:
+        condition: service_healthy
+
+volumes:
+  n8n_data:

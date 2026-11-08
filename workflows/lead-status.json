@@ -1,0 +1,261 @@
+{
+  "name": "Lead pipeline: status",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "lead-status",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "006a3868-97e3-4c04-aed7-660631695887",
+      "name": "Status request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        170
+      ],
+      "webhookId": "5c6f1a52-1f1e-4b8e-9a51-6c2d7f0e3a10",
+      "notes": "GET from the status page via the gateway (/api/status?id=)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d353947a-7ad4-4104-af3b-ed7ed82793b9",
+              "leftValue": "={{ /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(String($json.query.id || '')) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ca5ae62a-a28b-4d3f-a8eb-1e5a822b5b92",
+      "name": "Valid id?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        250,
+        170
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "lead_events"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "lead_id",
+              "condition": "eq",
+              "keyValue": "={{ $json.query.id }}"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "id": "1ad08df5-6752-478c-afe8-343231195cf6",
+      "name": "Get lead events",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        500,
+        0
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Turns the rows of the lead_events table into the public status shown on the status page.\n// Only what is safe to show the submitter goes out: no full email, no message, no keys.\n\nconst STEPS = [\n  ['received', 'Form received'],\n  ['validated', 'Validation & spam guard'],\n  ['qualified', 'AI qualification'],\n  ['crm_contact', 'HubSpot contact'],\n  ['crm_note', 'HubSpot note'],\n  ['reply_email', 'Email reply to you'],\n  ['team_alert', 'Team alert'],\n  ['done', 'Done'],\n];\nconst STALL_MS = 90_000;\n\nfunction parseDetail(s) {\n  if (s === null || s === undefined || s === '') return null;\n  if (typeof s === 'object') return s;\n  try {\n    return JSON.parse(s);\n  } catch {\n    return { note: String(s).slice(0, 300) };\n  }\n}\n\nfunction buildStatus(rows, nowMs) {\n  const events = (rows || [])\n    .filter((r) => r && r.step && r.createdAt)\n    .map((r) => ({ ...r, t: Date.parse(r.createdAt) }))\n    .sort((a, b) => a.t - b.t || (a.id ?? 0) - (b.id ?? 0));\n  if (!events.length) return null;\n\n  const first = events[0];\n  const byStep = {};\n  for (const e of events) (byStep[e.step] ??= []).push(e);\n\n  const received = parseDetail((byStep.received || [first])[0].detail) || {};\n  const doneEvent = (byStep.done || [])[0];\n  const finished = Boolean(doneEvent);\n  const last = events[events.length - 1];\n  const stalled = !finished && nowMs - last.t > STALL_MS;\n\n  let qualification = null;\n  let runningAssigned = false;\n  const steps = STEPS.map(([key, label]) => {\n    const list = byStep[key] || [];\n    const final = [...list].reverse().find((e) => e.state !== 'retrying');\n    const retries = list.filter((e) => e.state === 'retrying');\n    if (!final) {\n      if (retries.length) {\n        runningAssigned = true;\n        const lastTry = retries[retries.length - 1];\n        return {\n          key, label, state: finished || stalled ? 'failed' : 'running', at: lastTry.createdAt,\n          summary: `Attempt ${retries.length} failed (${lastTry.summary}). Retrying…`,\n          detail: { attempts: retries.map((r, i) => ({ attempt: i + 1, at: r.createdAt, result: r.summary })) },\n        };\n      }\n      const state = !finished && !stalled && !runningAssigned ? 'running' : finished ? 'skipped' : 'pending';\n      if (state === 'running') runningAssigned = true;\n      return { key, label, state, at: null, summary: state === 'running' ? 'Working on it…' : '', detail: null };\n    }\n    let detail = parseDetail(final.detail);\n    if (retries.length) {\n      detail = { ...(detail || {}), attempts: retries.map((r, i) => ({ attempt: i + 1, at: r.createdAt, result: r.summary })) };\n    }\n    if (key === 'qualified' && detail) {\n      qualification = {\n        score: detail.score, tier: detail.tier, reason: detail.reason, scored_by: detail.scored_by,\n        ...(detail.fallback_reason ? { fallback_reason: detail.fallback_reason } : {}),\n      };\n    }\n    return { key, label, state: final.state, at: final.createdAt, summary: final.summary || '', detail };\n  });\n\n  const doneDetail = doneEvent ? parseDetail(doneEvent.detail) || {} : {};\n  return {\n    lead_id: first.lead_id,\n    created_at: first.createdAt,\n    finished,\n    outcome: finished ? doneDetail.outcome || 'ok' : null,\n    stalled,\n    lead: { first_name: received.first_name || '', company: received.company || '', email_masked: received.email_masked || '' },\n    qualification,\n    simulated: received.simulate && received.simulate !== 'none' ? [received.simulate] : [],\n    steps,\n  };\n}\n\nconst rows = $input.all().map((i) => i.json).filter((r) => r && r.id !== undefined);\nconst status = buildStatus(rows, Date.now());\nreturn [{ json: status ? { found: true, status } : { found: false } }];"
+      },
+      "id": "37db6b66-b496-4aa2-a09d-b62613403ed5",
+      "name": "Build status",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        750,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "7d8462fc-ee54-4dfa-a76b-ff52dbce1116",
+              "leftValue": "={{ $json.found === true }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e9d12fdb-03ed-4be1-a02a-e7e9aa6be261",
+      "name": "Found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1000,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.status }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Cache-Control",
+                "value": "no-store"
+              }
+            ]
+          }
+        }
+      },
+      "id": "10eef593-2062-4130-aa6a-b712772ae717",
+      "name": "Status (200)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1250,
+        -170
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ ({ error: 'not_found' }) }}",
+        "options": {
+          "responseCode": 404
+        }
+      },
+      "id": "4a277e1c-473a-4628-a3fc-f4927e3f3bb8",
+      "name": "Not found (404)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1250,
+        170
+      ]
+    }
+  ],
+  "connections": {
+    "Status request": {
+      "main": [
+        [
+          {
+            "node": "Valid id?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid id?": {
+      "main": [
+        [
+          {
+            "node": "Get lead events",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Not found (404)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get lead events": {
+      "main": [
+        [
+          {
+            "node": "Build status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build status": {
+      "main": [
+        [
+          {
+            "node": "Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Found?": {
+      "main": [
+        [
+          {
+            "node": "Status (200)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Not found (404)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "lead-pipeline"
+  },
+  "active": false
+}

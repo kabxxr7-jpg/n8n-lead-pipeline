@@ -1,0 +1,96 @@
+{
+  "name": "Lead pipeline: error alert",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "1a53cb3f-a140-4543-aff5-8b1991038686",
+      "name": "On workflow error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        170
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const e = $input.first().json;\nconst ex = e.execution || {};\nconst wf = e.workflow || {};\nconst msg = (ex.error && (ex.error.message || ex.error.description)) || 'unknown error';\nconst text = [\n  'An n8n execution failed and its own error handling could not finish.',\n  '',\n  'Workflow: ' + (wf.name || '?'),\n  'Execution: ' + (ex.id || '?') + ' (mode ' + (ex.mode || '?') + ')',\n  'Last node: ' + (ex.lastNodeExecuted || '?'),\n  'Error: ' + String(msg).slice(0, 500),\n  '',\n  'Open the execution in the n8n editor (local only) to replay it.',\n].join('\\n');\nreturn [{ json: { body: { from: $env.EMAIL_FROM_ALERTS || $env.EMAIL_FROM_LEADS, to: [$env.TEAM_EMAIL], subject: '[n8n ERROR] ' + (wf.name || 'workflow') + ': ' + String(msg).slice(0, 80), text } } }];"
+      },
+      "id": "259f2b1e-39eb-49ad-a468-f7b2fc56f749",
+      "name": "Format alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        250,
+        170
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.RESEND_BASE || 'https://api.resend.com') + '/emails' }}",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}",
+        "options": {
+          "timeout": 15000
+        },
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth"
+      },
+      "id": "6579d332-5d50-4b6b-ad4c-574e8b593318",
+      "name": "Resend: error alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        500,
+        170
+      ],
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "__CRED_RESEND__",
+          "name": "Resend API key"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "On workflow error": {
+      "main": [
+        [
+          {
+            "node": "Format alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format alert": {
+      "main": [
+        [
+          {
+            "node": "Resend: error alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "lead-pipeline"
+  },
+  "active": false
+}
